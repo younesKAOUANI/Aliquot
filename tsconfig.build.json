@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // rootDir "." so scripts/ and src/ keep their relative layout under dist/.
+    // scripts/seed.ts imports from src/, and a build that flattened them would
+    // break those imports.
+    "rootDir": ".",
+    "outDir": "./dist"
+  },
+  "include": ["src/**/*", "scripts/**/*"],
+  "exclude": ["node_modules", "dist", "test", "**/*.spec.ts"]
+}
