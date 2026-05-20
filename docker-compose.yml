@@ -1,0 +1,153 @@
+# A reviewer runs `docker compose up` and gets a working, populated system.
+#
+# That is a hard constraint rather than a nicety: a demo that needs a setup
+# document is a demo nobody sees. So the migration runner, the role bootstrap,
+# the bucket creation and the seed data are all services in this file with
+# explicit dependency ordering, not steps in a README.
+#
+# The credentials below are deliberately weak and deliberately committed. This
+# file describes a local development stack and nothing else; the API refuses to
+# start if it is handed a privileged database role, so a copy of this pointed at
+# anything real fails loudly rather than quietly working.
+
+name: aliquot
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: aliquot
+    ports:
+      - '5433:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # -d is not optional: without it pg_isready reports ready during the
+      # initdb bootstrap, when the server is up but the database is not yet
+      # there, and every dependent service races into a connection error.
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d aliquot']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: aliquot
+      MINIO_ROOT_PASSWORD: aliquot-dev-secret
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  # One-shot. Applies migrations, then creates the unprivileged login role the
+  # API and worker actually connect as. Runs as the database owner; nothing else
+  # in the stack ever holds those credentials.
+  migrate:
+    build:
+      context: .
+      target: runtime
+    command: ['node', 'dist/scripts/migrate.js']
+    environment:
+      DATABASE_ADMIN_URL: postgres://postgres:postgres@postgres:5432/aliquot
+      APP_DB_USER: aliquot_login
+      APP_DB_PASSWORD: aliquot-dev-secret
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  api:
+    build:
+      context: .
+      target: runtime
+    command: ['node', 'dist/src/main.js']
+    environment:
+      NODE_ENV: development
+      SERVICE_ROLE: api
+      PORT: 3000
+      LOG_LEVEL: info
+      DATABASE_URL: postgres://aliquot_login:aliquot-dev-secret@postgres:5432/aliquot
+      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_BUCKET: aliquot
+      STORAGE_ACCESS_KEY_ID: aliquot
+      STORAGE_SECRET_ACCESS_KEY: aliquot-dev-secret
+      STORAGE_FORCE_PATH_STYLE: 'true'
+      AUTH_JWT_SECRET: development-only-secret-not-for-any-real-deployment
+      AUTH_DEV_TOKEN_ENDPOINT: 'true'
+    ports:
+      - '3000:3000'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://localhost:3000/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  worker:
+    build:
+      context: .
+      target: runtime
+    command: ['node', 'dist/src/worker.js']
+    environment:
+      NODE_ENV: development
+      SERVICE_ROLE: worker
+      LOG_LEVEL: info
+      DATABASE_URL: postgres://aliquot_login:aliquot-dev-secret@postgres:5432/aliquot
+      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_BUCKET: aliquot
+      STORAGE_ACCESS_KEY_ID: aliquot
+      STORAGE_SECRET_ACCESS_KEY: aliquot-dev-secret
+      STORAGE_FORCE_PATH_STYLE: 'true'
+      AUTH_JWT_SECRET: development-only-secret-not-for-any-real-deployment
+      WORKER_CONCURRENCY: 4
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+
+  # One-shot. Seeds a tenant, a study, instruments, users, and a small set of
+  # runs that have already been through the full lifecycle, so the lineage graph
+  # and the audit chain have something in them the moment the viewer loads.
+  seed:
+    build:
+      context: .
+      target: runtime
+    command: ['node', 'dist/scripts/seed.js']
+    environment:
+      NODE_ENV: development
+      SERVICE_ROLE: api
+      DATABASE_URL: postgres://aliquot_login:aliquot-dev-secret@postgres:5432/aliquot
+      DATABASE_ADMIN_URL: postgres://postgres:postgres@postgres:5432/aliquot
+      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_BUCKET: aliquot
+      STORAGE_ACCESS_KEY_ID: aliquot
+      STORAGE_SECRET_ACCESS_KEY: aliquot-dev-secret
+      STORAGE_FORCE_PATH_STYLE: 'true'
+      AUTH_JWT_SECRET: development-only-secret-not-for-any-real-deployment
+      API_BASE_URL: http://api:3000
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  postgres-data:
+  minio-data:
