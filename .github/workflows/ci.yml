@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Static checks are split from the integration suite so a formatting mistake
+  # reports in under a minute instead of after the containers have started.
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      # ADR-002 accepts an ongoing obligation: every tenant-scoped table needs
+      # its policy, and needs it remembered. This is where that is enforced.
+      - run: npm run lint:migrations
+      - run: npm run test:unit
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # Real PostgreSQL and real MinIO via Testcontainers. The guarantees this
+      # service makes live in RLS policies, triggers, grants and presigned
+      # multipart uploads, none of which exist in a mock (ADR-012).
+      - run: npm run test:integration
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: 'true'
+
+  # The claim in the README is that a reviewer can run `docker compose up` and
+  # get a populated, working system. That claim is worth exactly as much as the
+  # last time somebody checked it, so CI checks it.
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: bring the stack up
+        run: docker compose up --build --wait --wait-timeout 300 api worker
+      - name: wait for the seed to complete
+        run: |
+          docker compose up --exit-code-from seed seed
+      - name: the demo dataset is actually present
+        run: |
+          set -euo pipefail
+          runs=$(docker compose exec -T postgres psql -U postgres -d aliquot -tAc \
+            "select count(*) from aliquot.run where state = 'PROCESSED'")
+          echo "processed runs: $runs"
+          test "$runs" -gt 0
+          events=$(docker compose exec -T postgres psql -U postgres -d aliquot -tAc \
+            "select count(*) from aliquot.audit_event")
+          echo "audit events: $events"
+          test "$events" -gt 0
+      - name: dump logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+      - name: tear down
+        if: always()
+        run: docker compose down -v
