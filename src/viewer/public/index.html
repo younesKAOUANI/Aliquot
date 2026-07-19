@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Aliquot</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Aliquot</h1>
+      <p class="subtitle">Instrument run ingestion &amp; provenance — read-only viewer</p>
+      <div class="auth">
+        <label for="token">Bearer token</label>
+        <input id="token" type="password" placeholder="paste a token, or sign in below" />
+        <input id="email" type="email" placeholder="operator@acme.test" />
+        <button id="signin" type="button">Sign in</button>
+        <span id="whoami" class="muted"></span>
+      </div>
+    </header>
+
+    <nav>
+      <button type="button" data-view="runs" class="active">Runs</button>
+      <button type="button" data-view="lineage">Lineage</button>
+      <button type="button" data-view="audit">Audit chain</button>
+    </nav>
+
+    <main>
+      <section id="view-runs" class="view active">
+        <div class="filters">
+          <select id="filter-state">
+            <option value="">any state</option>
+            <option>OPEN</option>
+            <option>SEALED</option>
+            <option>PROCESSING</option>
+            <option>PROCESSED</option>
+            <option>PROCESSING_FAILED</option>
+            <option>QUARANTINED</option>
+            <option>ABANDONED</option>
+          </select>
+          <button id="reload-runs" type="button">Reload</button>
+        </div>
+        <table id="runs-table">
+          <thead>
+            <tr>
+              <th>Run</th>
+              <th>State</th>
+              <th>Study</th>
+              <th>Instrument</th>
+              <th>Acquired</th>
+              <th>Artifacts</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <button id="runs-more" type="button" hidden>Load more</button>
+        <div id="run-detail"></div>
+      </section>
+
+      <section id="view-lineage" class="view">
+        <div class="filters">
+          <input id="lineage-artifact" placeholder="artifact id" size="40" />
+          <select id="lineage-direction">
+            <option value="both">both</option>
+            <option value="ancestors">ancestors</option>
+            <option value="descendants">descendants</option>
+          </select>
+          <button id="load-lineage" type="button">Trace</button>
+          <a id="prov-link" href="#" target="_blank" rel="noopener" hidden>PROV-JSON</a>
+        </div>
+        <div id="lineage-graph"></div>
+        <div id="lineage-detail"></div>
+      </section>
+
+      <section id="view-audit" class="view">
+        <div class="filters">
+          <button id="verify-chain" type="button">Verify chain</button>
+          <button id="reload-audit" type="button">Reload</button>
+          <span id="verify-result"></span>
+        </div>
+        <table id="audit-table">
+          <thead>
+            <tr>
+              <th>Seq</th>
+              <th>Action</th>
+              <th>Actor</th>
+              <th>Target</th>
+              <th>Occurred</th>
+              <th>Hash</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <button id="audit-more" type="button" hidden>Load more</button>
+      </section>
+    </main>
+
+    <footer>
+      <span id="error" class="error"></span>
+      <a href="/docs">OpenAPI</a>
+    </footer>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
