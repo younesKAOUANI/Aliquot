@@ -19,6 +19,15 @@ docker compose up
 That is the whole setup. The stack comes up migrated, seeded, and demo-ready at
 <http://localhost:3000> — API docs at `/docs`, read-only viewer at `/`.
 
+If something already holds 3000, 5433, 9000 or 9001, override the published
+ports rather than fighting for them:
+
+```
+ALIQUOT_API_PORT=3100 ALIQUOT_MINIO_PORT=9200 \
+ALIQUOT_MINIO_CONSOLE_PORT=9201 ALIQUOT_POSTGRES_PORT=55434 \
+docker compose up
+```
+
 ---
 
 ## Contents
@@ -268,7 +277,7 @@ settles:
 ### The demo
 
 ```bash
-npm run demo
+docker compose run --rm demo
 ```
 
 Drives a full lifecycle against a running stack and prints what happened at each
@@ -279,6 +288,14 @@ exact broken sequence number. It exits non-zero if any step does not behave as
 narrated, so it doubles as a smoke test.
 
 To follow the same arc by hand with `curl`, see [`docs/DEMO.md`](docs/DEMO.md).
+
+It runs *inside* the compose network rather than from your shell, and that is
+worth understanding because it will bite you otherwise: a presigned URL is
+signed for a specific host, so the URLs this API issues name `minio:9000`.
+That is reachable from the worker and from a container on the same network, and
+not from your laptop. Signing them for `localhost` would fix the laptop and
+break the worker. A real deployment has one externally-resolvable storage
+endpoint and the question does not arise.
 
 ### Locally, without containers
 

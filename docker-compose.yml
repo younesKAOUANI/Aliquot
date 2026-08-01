@@ -9,6 +9,14 @@
 # file describes a local development stack and nothing else; the API refuses to
 # start if it is handed a privileged database role, so a copy of this pointed at
 # anything real fails loudly rather than quietly working.
+#
+# Published ports are overridable because 3000, 5433, 9000 and 9001 are popular
+# and a developer with two projects open will collide on at least one of them.
+# The failure is a Docker networking error that says nothing about which service
+# wanted the port, so the five seconds spent parameterising these saves an
+# unpleasant ten minutes. Override in .env or inline:
+#
+#   ALIQUOT_API_PORT=3100 ALIQUOT_MINIO_PORT=9200 docker compose up
 
 name: aliquot
 
@@ -20,7 +28,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: aliquot
     ports:
-      - '5433:5432'
+      - '${ALIQUOT_POSTGRES_PORT:-5433}:5432'
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -40,8 +48,8 @@ services:
       MINIO_ROOT_USER: aliquot
       MINIO_ROOT_PASSWORD: aliquot-dev-secret
     ports:
-      - '9000:9000'
-      - '9001:9001'
+      - '${ALIQUOT_MINIO_PORT:-9000}:9000'
+      - '${ALIQUOT_MINIO_CONSOLE_PORT:-9001}:9001'
     volumes:
       - minio-data:/data
     healthcheck:
@@ -87,7 +95,7 @@ services:
       AUTH_JWT_SECRET: development-only-secret-not-for-any-real-deployment
       AUTH_DEV_TOKEN_ENDPOINT: 'true'
     ports:
-      - '3000:3000'
+      - '${ALIQUOT_API_PORT:-3000}:3000'
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -147,6 +155,39 @@ services:
       api:
         condition: service_healthy
     restart: on-failure
+
+  # The narrated walkthrough. Not started by `up`; run it explicitly:
+  #
+  #   docker compose run --rm demo
+  #
+  # It runs inside the compose network rather than from the host, and that is
+  # not incidental. A presigned URL is signed for a specific host, so the URLs
+  # this API issues name `minio:9000` -- reachable from the worker and from
+  # here, and not from the developer's laptop. Signing them for `localhost`
+  # instead would fix the laptop and break the worker. Running the client where
+  # the URLs are valid is the honest way round; a real deployment has one
+  # externally-resolvable endpoint and the question disappears.
+  demo:
+    profiles: ['demo']
+    build:
+      context: .
+      target: runtime
+    command: ['node', 'dist/scripts/demo.js']
+    environment:
+      NODE_ENV: development
+      SERVICE_ROLE: api
+      DATABASE_URL: postgres://aliquot_login:aliquot-dev-secret@postgres:5432/aliquot
+      DATABASE_ADMIN_URL: postgres://postgres:postgres@postgres:5432/aliquot
+      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_BUCKET: aliquot
+      STORAGE_ACCESS_KEY_ID: aliquot
+      STORAGE_SECRET_ACCESS_KEY: aliquot-dev-secret
+      STORAGE_FORCE_PATH_STYLE: 'true'
+      AUTH_JWT_SECRET: development-only-secret-not-for-any-real-deployment
+      API_BASE_URL: http://api:3000
+    depends_on:
+      api:
+        condition: service_healthy
 
 volumes:
   postgres-data:
