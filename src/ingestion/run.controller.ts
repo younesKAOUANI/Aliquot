@@ -9,7 +9,7 @@ import type { AliquotRequest } from '../http/principal';
 import { parseWith } from '../http/zod-validation';
 import { idempotencyKeyOf } from './idempotency.service';
 import { RunService } from './run.service';
-import type { RunDetail, RunMutationResult, RunSummary, SealResult } from './run.service';
+import type { RunDetail, RunListItem, RunMutationResult, SealResult } from './run.service';
 import { RUN_STATES } from './run-state-machine';
 
 /**
@@ -133,7 +133,7 @@ export class RunController {
   }
 
   @Get('runs')
-  async search(@Ctx() ctx: RequestContext, @Query() query: unknown): Promise<Page<RunSummary>> {
+  async search(@Ctx() ctx: RequestContext, @Query() query: unknown): Promise<Page<RunListItem>> {
     const input = parseWith(searchSchema, query, 'query');
     const state = input.state === undefined ? undefined : normaliseStates(input.state);
 

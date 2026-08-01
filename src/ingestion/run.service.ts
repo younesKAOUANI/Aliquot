@@ -118,6 +118,19 @@ export interface RunSummary {
   processingError: string | null;
 }
 
+/**
+ * A search result, which is a run summary plus the two names a human needs to
+ * read a list.
+ *
+ * Only the list carries them. A caller fetching one run by id can afford a
+ * lookup; a caller drawing twenty-five rows cannot afford fifty, and returning
+ * a table of opaque identifiers pushes exactly that problem onto every client.
+ */
+export interface RunListItem extends RunSummary {
+  studySlug: string;
+  instrumentSlug: string;
+}
+
 export interface ManifestEntryView {
   id: string;
   logicalName: string;
@@ -554,7 +567,7 @@ export class RunService {
    * registration time. Two runs sharing an acquisition millisecond are still
    * strictly ordered, which is what stops one of them being skipped.
    */
-  async search(ctx: RequestContext, query: RunSearchQuery): Promise<Page<RunSummary>> {
+  async search(ctx: RequestContext, query: RunSearchQuery): Promise<Page<RunListItem>> {
     if (query.studyId !== undefined) {
       await this.auth.requireStudyRole(ctx, query.studyId, READ_ROLES);
     }
@@ -562,40 +575,48 @@ export class RunService {
     return this.database.withTenant(ctx, async (trx) => {
       let statement = trx
         .selectFrom('aliquot.run')
-        .select(RUN_SUMMARY_COLUMNS)
-        .where('tenant_id', '=', ctx.tenantId)
+        .innerJoin('aliquot.study as s', 's.id', 'aliquot.run.study_id')
+        .innerJoin('aliquot.instrument as i', 'i.id', 'aliquot.run.instrument_id')
+        .select(RUN_SUMMARY_COLUMNS.map((column) => `aliquot.run.${column}` as const))
+        .select(['s.slug as study_slug', 'i.slug as instrument_slug'])
+        .where('aliquot.run.tenant_id', '=', ctx.tenantId)
         .where(this.visibleStudies(ctx))
-        .orderBy('acquired_at', 'desc')
-        .orderBy('id', 'desc')
+        .orderBy('aliquot.run.acquired_at', 'desc')
+        .orderBy('aliquot.run.id', 'desc')
         .limit(query.limit + 1);
 
       if (query.studyId !== undefined) {
-        statement = statement.where('study_id', '=', query.studyId);
+        statement = statement.where('aliquot.run.study_id', '=', query.studyId);
       }
       if (query.instrumentId !== undefined) {
-        statement = statement.where('instrument_id', '=', query.instrumentId);
+        statement = statement.where('aliquot.run.instrument_id', '=', query.instrumentId);
       }
       if (query.operatorId !== undefined) {
-        statement = statement.where('operator_id', '=', query.operatorId);
+        statement = statement.where('aliquot.run.operator_id', '=', query.operatorId);
       }
       if (query.state !== undefined && query.state.length > 0) {
-        statement = statement.where('state', 'in', query.state);
+        statement = statement.where('aliquot.run.state', 'in', query.state);
       }
       // Parsed to Date rather than passed through as text. acquired_at is a
       // timestamptz, and comparing it against a string leaves the coercion to
       // the server's DateStyle -- which is a setting, not a contract.
       if (query.acquiredFrom !== undefined) {
-        statement = statement.where('acquired_at', '>=', new Date(query.acquiredFrom));
+        statement = statement.where('aliquot.run.acquired_at', '>=', new Date(query.acquiredFrom));
       }
       if (query.acquiredTo !== undefined) {
-        statement = statement.where('acquired_at', '<=', new Date(query.acquiredTo));
+        statement = statement.where('aliquot.run.acquired_at', '<=', new Date(query.acquiredTo));
       }
       if (query.cursor !== undefined) {
         statement = statement.where(searchCursorPredicate(query.cursor));
       }
 
       const rows = await statement.execute();
-      return buildPage(rows.map(toSummary), query.limit, (run) => [run.acquiredAt, run.id]);
+      const items = rows.map((row) => ({
+        ...toSummary(row),
+        studySlug: row.study_slug,
+        instrumentSlug: row.instrument_slug,
+      }));
+      return buildPage(items, query.limit, (run) => [run.acquiredAt, run.id]);
     });
   }
 

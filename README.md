@@ -453,9 +453,38 @@ are exercised end to end by `scripts/seed.ts` and `scripts/demo.ts` — which do
 corrupt an upload and do wait on real processing — but a script that exits
 non-zero is weaker evidence than a suite, and this is the next thing to write.
 
+### Browser tests
+
+The viewer gets its own suite, and it earned it. Four defects shipped that no
+other layer could see, because the integration tests call the API directly and
+never load a page:
+
+- the viewer posted `{ email }` to an endpoint requiring `tenantSlug`, so
+  sign-in failed outright
+- the token response nests the principal under `user`, so the greeting silently
+  fell back to the email
+- chain verification posted an empty body to an endpoint that demanded a
+  `studyId` — for a chain that is per *tenant*, which was a modelling error in
+  the API rather than in the viewer
+- the run list rendered `run.study.slug` while the API returned a flat
+  `studyId`, so the Study and Instrument columns were blank
+
+Every one is wiring rather than logic, and wiring is exactly what a browser
+test is for.
+
+```bash
+docker compose up --wait api worker && docker compose up seed
+npm run test:e2e           # 12 tests, chromium, ~6s
+```
+
+It runs against a stack that is already up rather than starting its own, so it
+exercises the same system a reviewer sees. Point it elsewhere with
+`ALIQUOT_E2E_BASE_URL`.
+
 ```bash
 npm run test:unit          # milliseconds, no Docker
 npm run test:integration   # real dependencies
+npm run test:e2e           # browser, needs a running stack
 ```
 
 ---

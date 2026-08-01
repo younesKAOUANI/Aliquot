@@ -61,15 +61,26 @@ $('#token').addEventListener('change', (event) => {
 
 $('#signin').addEventListener('click', async () => {
   const email = $('#email').value.trim();
-  if (!email) return;
+  // The tenant is required, not inferred. An email address is unique within a
+  // tenant and not across them, so two tenants can both hold
+  // operator@example.test and resolving on the address alone would either pick
+  // one arbitrarily or need a cross-tenant lookup -- which would turn a
+  // dev-only endpoint into a way to probe which addresses exist elsewhere.
+  const tenantSlug = $('#tenant').value.trim();
+  if (!email || !tenantSlug) {
+    $('#error').textContent = 'Both a tenant slug and an email are required.';
+    return;
+  }
   const result = await api('/v1/auth/token', {
     method: 'POST',
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({ email, tenantSlug }),
   });
   state.token = result.token;
   $('#token').value = result.token;
   sessionStorage.setItem('aliquot.token', state.token);
-  $('#whoami').textContent = `${result.displayName ?? email}`;
+  // The response nests the principal under `user`; reading result.displayName
+  // silently yielded undefined and fell back to the email every time.
+  $('#whoami').textContent = result.user?.displayName ?? email;
   await loadRuns(true);
 });
 
@@ -110,8 +121,8 @@ async function loadRuns(reset) {
     row.innerHTML = `
       <td><code>${short(run.id)}</code></td>
       <td><span class="badge ${run.state}">${run.state}</span></td>
-      <td>${escapeHtml(run.study?.slug ?? '')}</td>
-      <td>${escapeHtml(run.instrument?.slug ?? '')}</td>
+      <td>${escapeHtml(run.studySlug ?? '')}</td>
+      <td>${escapeHtml(run.instrumentSlug ?? '')}</td>
       <td class="muted">${run.acquiredAt ? new Date(run.acquiredAt).toISOString().slice(0, 16).replace('T', ' ') : '—'}</td>
       <td class="muted">${run.artifactCount ?? run.manifest?.length ?? '—'}</td>`;
     row.addEventListener('click', () => void showRun(run.id));

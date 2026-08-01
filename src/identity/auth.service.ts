@@ -183,9 +183,26 @@ export class AuthService {
    * API, because nobody administers anything yet. Bootstrapping a tenant is an
    * out-of-band operation.
    */
-  async requireTenantAdmin(ctx: RequestContext): Promise<void> {
+  /**
+   * Require one of `allowed` on **any** study in the tenant.
+   *
+   * Some resources are tenant-scoped rather than study-scoped -- the audit
+   * chain most obviously, since `seq` is per tenant and the chain spans every
+   * study in it. Authorising those against a named study would be asking the
+   * caller to nominate a study the resource does not belong to, which is how a
+   * tenant-wide read ends up looking like a study-wide one.
+   *
+   * Holding the role anywhere in the tenant is the right bar for those: a
+   * steward's remit is the record, and the record is not divisible by study.
+   */
+  async requireTenantRole(ctx: RequestContext, allowed: StudyRole[]): Promise<void> {
+    const required = allowed.join(' or ');
+
     if (ctx.actorType !== 'user') {
-      throw new ForbiddenError('Only a user principal may perform tenant administration.', 'admin');
+      throw new ForbiddenError(
+        `Only a user principal may act as ${required} across the tenant.`,
+        required,
+      );
     }
 
     const userId = ctx.actorId;
@@ -193,22 +210,26 @@ export class AuthService {
       throw new UnauthenticatedError('This session is not attributable to a user.');
     }
 
-    const administered = await this.database.withTenant(ctx, (trx) =>
+    const held = await this.database.withTenant(ctx, (trx) =>
       trx
         .selectFrom('aliquot.membership')
         .select('id')
         .where('user_id', '=', userId)
-        .where('role', '=', 'admin')
+        .where('role', 'in', allowed)
         .where('revoked_at', 'is', null)
         .executeTakeFirst(),
     );
 
-    if (administered === undefined) {
+    if (held === undefined) {
       throw new ForbiddenError(
-        'This operation requires the admin role on at least one study in the tenant.',
-        'admin',
+        `This operation requires ${required} on at least one study in the tenant.`,
+        required,
       );
     }
+  }
+
+  async requireTenantAdmin(ctx: RequestContext): Promise<void> {
+    await this.requireTenantRole(ctx, ['admin']);
   }
 
   /** The caller's active role on a study, or null when there is no active membership. */

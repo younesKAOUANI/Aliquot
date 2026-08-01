@@ -68,6 +68,27 @@ jobs:
             "select count(*) from aliquot.audit_event")
           echo "audit events: $events"
           test "$events" -gt 0
+
+      # The viewer is the one surface where a mistake is invisible to every
+      # other suite: the integration tests call the API directly and never load
+      # a page, so a field the browser fails to send reaches production looking
+      # like a working feature.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+      - name: the narrated demo still narrates
+        run: docker compose --profile demo run --rm demo
       - name: dump logs on failure
         if: failure()
         run: docker compose logs --no-color --tail 200

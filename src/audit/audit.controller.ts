@@ -45,7 +45,14 @@ const listQuerySchema = z.object({
 });
 
 const verifySchema = z.object({
-  studyId: z.uuid(),
+  /**
+   * Optional, and it is a narrowing rather than a requirement. The chain is
+   * per tenant -- `seq` spans every study in it -- so naming a study cannot
+   * scope the read. It is accepted only so a caller who holds stewardship on
+   * exactly one study can say which one they are exercising; omitting it checks
+   * the same role across the tenant.
+   */
+  studyId: z.uuid().optional(),
   fromSeq: decimalSeq.optional(),
 });
 
@@ -55,7 +62,7 @@ const checkpointListSchema = z.object({
 });
 
 const createCheckpointSchema = z.object({
-  studyId: z.uuid(),
+  studyId: z.uuid().optional(),
   force: z.boolean().default(false),
   /** Stored verbatim as `external_ref`; this service never dereferences it. */
   externalRef: z.string().min(1).max(512).optional(),
@@ -91,7 +98,7 @@ export class AuditController {
     @Body() body: unknown,
   ): Promise<ChainVerificationResult> {
     const input = parseWith(verifySchema, body ?? {}, 'body');
-    await this.auth.requireStudyRole(ctx, input.studyId, STEWARD_OR_ADMIN);
+    await this.requireStewardship(ctx, input.studyId);
 
     return this.verifier.verify(ctx, { fromSeq: input.fromSeq });
   }
@@ -111,7 +118,7 @@ export class AuditController {
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<CheckpointRecord> {
     const input = parseWith(createCheckpointSchema, body ?? {}, 'body');
-    await this.auth.requireStudyRole(ctx, input.studyId, STEWARD_OR_ADMIN);
+    await this.requireStewardship(ctx, input.studyId);
 
     const result = await this.checkpoints.create(ctx, {
       force: input.force,
@@ -123,5 +130,24 @@ export class AuditController {
     // head, and nothing was created.
     reply.status(result.created ? 201 : 200);
     return result.checkpoint;
+  }
+
+  /**
+   * Stewardship over the tenant's chain.
+   *
+   * With a study named, the caller is asserting the role they hold there; the
+   * check is the ordinary study-scoped one. Without, the same role is required
+   * anywhere in the tenant -- which is the honest bar for a resource that is not
+   * divisible by study.
+   */
+  private async requireStewardship(
+    ctx: RequestContext,
+    studyId: string | undefined,
+  ): Promise<void> {
+    if (studyId === undefined) {
+      await this.auth.requireTenantRole(ctx, STEWARD_OR_ADMIN);
+      return;
+    }
+    await this.auth.requireStudyRole(ctx, studyId, STEWARD_OR_ADMIN);
   }
 }
