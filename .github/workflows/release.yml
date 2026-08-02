@@ -1,0 +1,117 @@
+name: release
+
+# Builds and publishes the runtime image. Deployment is a separate workflow with
+# its own approval gate, because "the image built" and "the image is serving
+# production" should never be the same event.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # Required for the build provenance attestation below.
+      id-token: write
+      attestations: write
+
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      tags: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=Aliquot
+            org.opencontainers.image.description=Instrument run ingestion and provenance service
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # An SBOM and a provenance attestation, for a service whose entire
+          # argument is that you can tell where things came from. Not asserting
+          # that about its own supply chain would be an odd omission.
+          sbom: true
+          provenance: mode=max
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: the published image actually runs
+        run: |
+          set -euo pipefail
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE }}@${{ steps.build.outputs.digest }}"
+
+          # A smoke test that fails for the right reason. With no DATABASE_URL
+          # the config parser must reject the boot and name the variable; if it
+          # instead crashed on a missing module or a bad entrypoint, the message
+          # would be different and this catches that.
+          output=$(docker run --rm "$IMAGE" node dist/src/main.js 2>&1 || true)
+          echo "$output"
+          echo "$output" | grep -q 'DATABASE_URL'
+
+          # The migration runner and the scripts are in the image and loadable.
+          docker run --rm "$IMAGE" node -e "require('/app/dist/scripts/migrate.js')" 2>&1 | grep -q 'DATABASE_ADMIN_URL'
+
+          # The viewer shipped with it.
+          docker run --rm --entrypoint sh "$IMAGE" -c 'test -f /app/dist/src/viewer/public/index.html'
+
+          # Migrations shipped where the compiled runner looks for them.
+          docker run --rm --entrypoint sh "$IMAGE" -c 'ls /app/dist/migrations/0001_foundation.sql'
+
+      - name: summary
+        run: |
+          {
+            echo "### Image published"
+            echo
+            echo '```'
+            echo "${{ env.REGISTRY }}/${{ env.IMAGE }}@${{ steps.build.outputs.digest }}"
+            echo '```'
+            echo
+            echo "Tags:"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,127 @@
+name: deploy
+
+# Ships a published image to the VPS.
+#
+# Separate from `release` and gated on a GitHub Environment, so promoting to
+# production is a decision someone makes rather than a side effect of merging.
+# The environment also holds the SSH credentials, which keeps them out of reach
+# of a workflow triggered from a fork.
+
+on:
+  workflow_run:
+    workflows: ['release']
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag or digest to deploy (default: latest main build)'
+        required: false
+        default: ''
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # A release that failed must not deploy. workflow_run fires either way.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://aliquot.youneskaouani.dev
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: resolve the image reference
+        id: image
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            ref="${{ inputs.image_tag }}"
+          else
+            # Pin by commit SHA rather than :latest. A deploy should name
+            # exactly what it is shipping, and :latest moves under you between
+            # the pull and the next restart.
+            ref="sha-${{ github.event.workflow_run.head_sha || github.sha }}"
+          fi
+          echo "image=ghcr.io/${{ github.repository }}:${ref}" >> "$GITHUB_OUTPUT"
+          echo "Deploying ghcr.io/${{ github.repository }}:${ref}"
+
+      - name: open an ssh session to the host
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # A pinned host key, not ssh-keyscan at deploy time. Trusting whatever
+          # answers on the night is not host verification, it is a formality.
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: sync the deployment files
+        run: |
+          set -euo pipefail
+          scp -P "${{ secrets.DEPLOY_PORT || 22 }}" \
+            deploy/docker-compose.prod.yml deploy/Caddyfile deploy/deploy.sh \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_DIR || '/opt/aliquot' }}/"
+
+      - name: deploy
+        run: |
+          set -euo pipefail
+          ssh -p "${{ secrets.DEPLOY_PORT || 22 }}" \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "ALIQUOT_IMAGE='${{ steps.image.outputs.image }}' \
+             GHCR_USER='${{ github.actor }}' \
+             GHCR_TOKEN='${{ secrets.GITHUB_TOKEN }}' \
+             bash ${{ secrets.DEPLOY_DIR || '/opt/aliquot' }}/deploy.sh"
+
+      - name: verify the deployment from outside
+        run: |
+          set -euo pipefail
+          # From the internet, over TLS, against the real hostname -- not a
+          # container health check, which would pass just as happily while
+          # Caddy or DNS was broken.
+          for attempt in $(seq 1 30); do
+            if curl -fsS --max-time 10 https://aliquot.youneskaouani.dev/readyz > /dev/null; then
+              echo "ready after ${attempt} attempt(s)"
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "::error::the service did not become ready from the public internet"
+              exit 1
+            fi
+            sleep 5
+          done
+
+          echo "--- viewer ---"
+          curl -fsS --max-time 10 -o /dev/null -w 'viewer: %{http_code}\n' https://aliquot.youneskaouani.dev/
+          echo "--- openapi ---"
+          curl -fsS --max-time 10 -o /dev/null -w 'openapi: %{http_code}\n' https://aliquot.youneskaouani.dev/openapi.json
+
+          # The dev token endpoint mints a session for an arbitrary email. It is
+          # blocked in the application, in the compose environment and at the
+          # edge; this asserts the result rather than trusting all three.
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+            -X POST https://aliquot.youneskaouani.dev/v1/auth/token \
+            -H 'content-type: application/json' \
+            -d '{"email":"probe@example.test","tenantSlug":"acme"}')
+          echo "dev token endpoint: ${code}"
+          if [ "$code" != "404" ]; then
+            echo "::error::/v1/auth/token answered ${code}; it must be unreachable in production"
+            exit 1
+          fi
+
+      - name: summary
+        if: always()
+        run: |
+          {
+            echo "### Deployed"
+            echo
+            echo "- image: \`${{ steps.image.outputs.image }}\`"
+            echo "- url: https://aliquot.youneskaouani.dev"
+          } >> "$GITHUB_STEP_SUMMARY"
