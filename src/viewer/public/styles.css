@@ -88,6 +88,25 @@ button:hover {
   border-color: var(--accent);
 }
 
+/* The one call to action on the page. Distinct enough that a stranger finds it
+   without reading the token field first, quiet enough that it does not compete
+   with the data. */
+button.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.demo-banner {
+  margin: 12px 0 0;
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warn);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+}
+
 nav {
   display: flex;
   gap: 4px;

@@ -58,6 +58,21 @@ export interface SessionClaims {
   exp: number;
   /** Recorded in the audit event for the sign-in, so a later action can be tied to a session. */
   jti: string;
+  /**
+   * Present, and only ever `true`, on a session minted by `POST /v1/auth/demo`.
+   *
+   * It rides in the signed payload rather than being re-derived from the user
+   * id, because "this session came from the public demo" is a property of how
+   * the credential was obtained and not of who it names. The same account
+   * signing in through any other mechanism is not a demo session, and a lookup
+   * table of demo user ids would say otherwise.
+   *
+   * Absent rather than `false` when it does not apply: the claim set is
+   * canonicalised before signing, so an omitted member is one fewer byte in
+   * every ordinary token, and `demo?: true` makes the only interesting value
+   * the only representable one.
+   */
+  demo?: true;
 }
 
 export interface IssuedToken {
@@ -71,6 +86,7 @@ const claimsSchema = z.object({
   iat: z.number().int().positive(),
   exp: z.number().int().positive(),
   jti: z.uuid(),
+  demo: z.literal(true).optional(),
 });
 
 const headerSchema = z.object({
@@ -80,7 +96,14 @@ const headerSchema = z.object({
 
 export function signSession(
   secret: string,
-  input: { userId: string; tenantId: string; ttlSeconds: number; issuedAt?: Date },
+  input: {
+    userId: string;
+    tenantId: string;
+    ttlSeconds: number;
+    issuedAt?: Date;
+    /** Marks the session as a public read-only demo one. See `SessionClaims.demo`. */
+    demo?: boolean;
+  },
 ): IssuedToken {
   const issuedAt = Math.floor((input.issuedAt?.getTime() ?? Date.now()) / 1000);
   const claims: SessionClaims = {
@@ -89,6 +112,7 @@ export function signSession(
     iat: issuedAt,
     exp: issuedAt + input.ttlSeconds,
     jti: uuidv4(),
+    ...(input.demo === true ? { demo: true as const } : {}),
   };
 
   // Canonical JSON rather than `JSON.stringify`: the same claims always produce

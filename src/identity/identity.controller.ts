@@ -14,7 +14,7 @@ import type { FastifyReply } from 'fastify';
 import { z } from 'zod';
 
 import type { Page } from '../common/cursor';
-import { AliquotError, ProblemType } from '../common/problem-details';
+import { AliquotError, ProblemType, RateLimitedError } from '../common/problem-details';
 import { AppConfig } from '../config/config';
 import type { RequestContext } from '../database/request-context';
 import type { StudyRole } from '../database/schema';
@@ -24,9 +24,11 @@ import type { AliquotRequest } from '../http/principal';
 import { parseWith } from '../http/zod-validation';
 import { AuthService } from './auth.service';
 import { Public } from './auth.guard';
+import { DemoRateLimiter } from './demo-rate-limiter';
 import { IdentityService } from './identity.service';
 import type {
   CreatedStudy,
+  DemoSession,
   InstrumentStudyGrant,
   IssuedSession,
   MemberView,
@@ -128,6 +130,7 @@ export class IdentityController {
     private readonly identity: IdentityService,
     private readonly auth: AuthService,
     private readonly config: AppConfig,
+    private readonly demoLimiter: DemoRateLimiter,
   ) {}
 
   @Post('instruments')
@@ -233,5 +236,50 @@ export class IdentityController {
     }
 
     return this.identity.issueDevSession(parseWith(devTokenSchema, body), correlationIdOf(request));
+  }
+
+  /**
+   * Public read-only sign-in, for a deployment that is meant to be looked at.
+   *
+   * There is deliberately no request body and no parameter of any kind. The
+   * endpoint above mints a session for whatever address it is handed, which is
+   * why it must never be reachable in production; this one mints a session for
+   * exactly one pre-configured, pre-seeded account and marks it as a demo, and
+   * `DemoReadOnlyGuard` refuses every mutating verb it presents. Nothing a
+   * caller sends can change who they become, so there is nothing to validate
+   * and no account list to probe.
+   *
+   * Off by default, and absent rather than forbidden when off, for the same
+   * reason as the development endpoint: a 403 would tell a scanner which
+   * deployment to come back to.
+   */
+  @Public()
+  @Post('auth/demo')
+  @HttpCode(200)
+  async issueDemoToken(@Req() request: AliquotRequest): Promise<DemoSession> {
+    if (!this.config.demo.enabled) {
+      throw new RouteNotFoundError('POST', '/v1/auth/demo');
+    }
+
+    // Keyed by source address. Fastify is constructed with `trustProxy`, so
+    // behind the reverse proxy this is deployed under, `ip` is the left-most
+    // X-Forwarded-For entry rather than the proxy's own address. A request with
+    // no address at all -- an in-process injection, which is how the tests
+    // reach this -- shares one bucket rather than being exempted, because an
+    // exemption is a hole that only ever gets found by accident.
+    const decision = this.demoLimiter.consume(
+      request.ip ?? 'unknown',
+      this.config.demo.rateLimitPerMinute,
+    );
+
+    if (!decision.allowed) {
+      throw new RateLimitedError(
+        `The demo sign-in accepts ${this.config.demo.rateLimitPerMinute} requests per minute ` +
+          `from one address. Retry in ${decision.retryAfterSeconds}s.`,
+        decision.retryAfterSeconds,
+      );
+    }
+
+    return this.identity.issueDemoSession(correlationIdOf(request));
   }
 }

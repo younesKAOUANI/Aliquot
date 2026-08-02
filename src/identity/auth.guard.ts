@@ -4,6 +4,7 @@ import { Reflector } from '@nestjs/core';
 
 import { correlationIdOf } from '../http/correlation';
 import type { AliquotRequest } from '../http/principal';
+import { pathOf } from '../http/request-path';
 import { AuthService } from './auth.service';
 
 /**
@@ -63,13 +64,4 @@ export class AuthGuard implements CanActivate {
 
     return true;
   }
-}
-
-/** Path without the query string, and without a trailing slash except at the root. */
-function pathOf(url: string): string {
-  const [path] = url.split('?');
-  if (path === undefined || path.length === 0) {
-    return '/';
-  }
-  return path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path;
 }

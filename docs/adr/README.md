@@ -34,6 +34,7 @@ Format: [`TEMPLATE.md`](TEMPLATE.md). House rules for writing them:
 | [0017](0017-tenant-scoped-rather-than-global-content-deduplication.md) | Tenant-scoped rather than global content deduplication | Accepted |
 | [0018](0018-a-dependency-free-static-viewer-instead-of-an-spa-toolchain.md) | A dependency-free static viewer instead of an SPA toolchain | Accepted |
 | [0019](0019-fastify-over-express-as-the-http-adapter.md) | Fastify over Express as the HTTP adapter | Accepted |
+| [0020](0020-read-only-demo-access-for-a-public-deployment.md) | Read-only demo access as a separate mechanism, not a relaxed development one | Accepted |
 
 ## Reading order
 
@@ -56,6 +57,7 @@ If you are reviewing this system and have time for four, read these:
 | Concern | ADRs |
 |---|---|
 | Tenant isolation | 0002, 0016, 0017 |
+| Authentication and public access | 0020 |
 | Exactly-once ingestion | 0001, 0011 |
 | Integrity of stored bytes | 0003, 0006, 0017 |
 | Tamper evidence | 0005, 0007, 0009, 0015 |

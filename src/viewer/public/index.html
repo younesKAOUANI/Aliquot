@@ -16,8 +16,13 @@
         <input id="tenant" type="text" placeholder="tenant slug" value="acme" size="12" />
         <input id="email" type="email" placeholder="operator@acme.test" />
         <button id="signin" type="button">Sign in</button>
+        <button id="demo-signin" type="button" class="primary">Try the demo</button>
         <span id="whoami" class="muted"></span>
       </div>
+      <p id="demo-banner" class="demo-banner" hidden>
+        Read-only demo session on a pre-seeded dataset. Every endpoint can be read; nothing can be
+        changed, and any request that would change something is refused.
+      </p>
     </header>
 
     <nav>

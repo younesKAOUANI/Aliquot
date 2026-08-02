@@ -47,6 +47,31 @@ const schema = z.object({
   /** Enables POST /v1/auth/token, which mints a session without an IdP. Never in production. */
   AUTH_DEV_TOKEN_ENDPOINT: z.stringbool().default(false),
 
+  /**
+   * Enables POST /v1/auth/demo, and it is allowed in production on purpose.
+   *
+   * The distinction from `AUTH_DEV_TOKEN_ENDPOINT` is not one of degree. That
+   * endpoint takes an email address and mints a session for whoever it names,
+   * so its reachability is the whole of the authentication boundary. This one
+   * takes no input at all: the tenant, the account and the lifetime are fixed
+   * below, and a session it issues is refused on every mutating verb by
+   * `DemoReadOnlyGuard`. There is nothing a caller can influence and no way to
+   * enumerate accounts, which is what makes it publishable. See ADR-0020.
+   */
+  DEMO_MODE: z.stringbool().default(false),
+  DEMO_TENANT_SLUG: z.string().min(1).max(63).default('acme'),
+  /**
+   * The seeded steward on the `acme` study; see `scripts/seed.ts`.
+   *
+   * Steward rather than scientist on purpose. `POST /v1/audit/verify` requires
+   * steward or admin, and chain verification is the single most worth-seeing
+   * thing on a public deployment -- pointing the demo at a scientist leaves the
+   * demo guard allowing the call and the role check refusing it.
+   */
+  DEMO_USER_EMAIL: z.email().max(320).default('priya.venkat@acme.test'),
+  DEMO_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(86400).default(3600),
+  DEMO_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(20),
+
   IDEMPOTENCY_RETENTION_HOURS: z.coerce.number().int().min(1).default(24),
 
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(4),
@@ -88,6 +113,14 @@ export class AppConfig {
     jwtSecret: string;
     tokenTtlSeconds: number;
     devTokenEndpoint: boolean;
+  };
+
+  readonly demo: {
+    enabled: boolean;
+    tenantSlug: string;
+    userEmail: string;
+    tokenTtlSeconds: number;
+    rateLimitPerMinute: number;
   };
 
   readonly idempotency: { retentionHours: number };
@@ -140,6 +173,14 @@ export class AppConfig {
       devTokenEndpoint: env.AUTH_DEV_TOKEN_ENDPOINT,
     };
 
+    this.demo = {
+      enabled: env.DEMO_MODE,
+      tenantSlug: env.DEMO_TENANT_SLUG,
+      userEmail: env.DEMO_USER_EMAIL,
+      tokenTtlSeconds: env.DEMO_TOKEN_TTL_SECONDS,
+      rateLimitPerMinute: env.DEMO_RATE_LIMIT_PER_MINUTE,
+    };
+
     this.idempotency = { retentionHours: env.IDEMPOTENCY_RETENTION_HOURS };
 
     this.worker = {
@@ -160,9 +201,24 @@ export class AppConfig {
       throw new Error('AUTH_DEV_TOKEN_ENDPOINT must not be enabled when NODE_ENV=production');
     }
 
+    // Two sign-in mechanisms with two different threat models. Running both is
+    // never what someone meant: either the deployment is a development one, in
+    // which case the demo endpoint adds nothing the dev endpoint does not
+    // already do, or it is public, in which case the dev endpoint is an
+    // authentication bypass sitting next to the thing that exists to avoid
+    // needing one. Refusing to start is how that stays a misconfiguration
+    // rather than a discovery.
+    if (this.demo.enabled && this.auth.devTokenEndpoint) {
+      throw new Error(
+        'DEMO_MODE and AUTH_DEV_TOKEN_ENDPOINT must not both be enabled; ' +
+          'they are different sign-in mechanisms with different threat models',
+      );
+    }
+
     Object.freeze(this.database);
     Object.freeze(this.storage);
     Object.freeze(this.auth);
+    Object.freeze(this.demo);
     Object.freeze(this.worker);
     Object.freeze(this.checkpoint);
     Object.freeze(this);

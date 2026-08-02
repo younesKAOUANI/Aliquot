@@ -9,6 +9,7 @@ import {
   IdempotentRequestInFlightError,
   PROBLEM_CONTENT_TYPE,
   ProblemType,
+  RateLimitedError,
 } from '../common/problem-details';
 import type { ProblemDetails } from '../common/problem-details';
 import { Logger } from '../observability/logger';
@@ -53,7 +54,10 @@ export class ProblemDetailsFilter implements ExceptionFilter {
 
     reply.status(problem.status).header(CORRELATION_HEADER, correlationId);
 
-    if (exception instanceof IdempotentRequestInFlightError) {
+    if (
+      exception instanceof IdempotentRequestInFlightError ||
+      exception instanceof RateLimitedError
+    ) {
       // The caller is being told to come back, so tell it when. Without this a
       // client retries immediately, collides with the in-flight request again,
       // and turns a transient conflict into a hot loop.

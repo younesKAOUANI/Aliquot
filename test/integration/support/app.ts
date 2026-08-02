@@ -69,6 +69,12 @@ export interface TestApp {
     payload: string,
     options?: RequestOptions,
   ): Promise<TestResponse<T>>;
+  del<T = unknown>(path: string, options?: RequestOptions): Promise<TestResponse<T>>;
+}
+
+/** A `TestApp` that owns its own Nest instance and must be closed by its caller. */
+export interface IsolatedTestApp extends TestApp {
+  close(): Promise<void>;
 }
 
 let booting: Promise<TestApp> | undefined;
@@ -94,8 +100,75 @@ export async function closeTestApp(): Promise<void> {
 }
 
 async function boot(): Promise<TestApp> {
-  const config = testConfig();
+  const app = await createApp();
+  application = app;
+  return clientFor(app);
+}
 
+/**
+ * A second application, with configuration this one run cannot get from the
+ * shared harness.
+ *
+ * `bootTestApp()` memoises one instance built from `process.env` as the global
+ * setup left it, which is right for every suite that wants the default
+ * deployment. Demo mode is not reachable that way: `DEMO_MODE` and
+ * `AUTH_DEV_TOKEN_ENDPOINT` are mutually exclusive at startup by design, and the
+ * global setup enables the latter for every other suite.
+ *
+ * Of the ways to get a differently-configured application, this is the one with
+ * the fewest moving parts. Overriding the `AppConfig` provider would need
+ * `@nestjs/testing`, which is not a dependency and would be a permanent one paid
+ * for a single suite. `CoreModule` builds `AppConfig` from `process.env` at
+ * instantiation time, so setting the variables around the call and restoring
+ * them immediately afterwards produces a genuine `AppConfig` -- parsed by the
+ * real schema, subject to the real startup checks -- without a second wiring
+ * path that could drift from the one production uses.
+ *
+ * The caller owns the result and must `close()` it: it holds its own connection
+ * pool and its own S3 client.
+ */
+export function bootAppWithEnv(overrides: Record<string, string>): Promise<IsolatedTestApp> {
+  // Serialised, because there is one `process.env` per process. Two of these in
+  // flight at once would each boot against whatever the other had most recently
+  // set, and the symptom is an application configured with someone else's
+  // variables -- which is a confusing failure to debug and a trivial one to
+  // make, since `Promise.all` over three of them is the obvious way to write
+  // the fixture.
+  const booted = envMutex.then(() => bootWithEnv(overrides));
+  envMutex = booted.then(
+    () => undefined,
+    () => undefined,
+  );
+  return booted;
+}
+
+let envMutex: Promise<void> = Promise.resolve();
+
+async function bootWithEnv(overrides: Record<string, string>): Promise<IsolatedTestApp> {
+  const previous = new Map<string, string | undefined>();
+  for (const [name, value] of Object.entries(overrides)) {
+    previous.set(name, process.env[name]);
+    process.env[name] = value;
+  }
+
+  try {
+    const app = await createApp();
+    return { ...clientFor(app), close: () => app.close() };
+  } finally {
+    // Restored whether or not the boot succeeded. A failed construction that
+    // left DEMO_MODE set would silently reconfigure every suite that runs after
+    // this one in the same process.
+    for (const [name, value] of previous) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  }
+}
+
+async function createApp(): Promise<NestFastifyApplication> {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     new FastifyAdapter({
@@ -105,7 +178,7 @@ async function boot(): Promise<TestApp> {
     }),
     {
       logger: new Logger({
-        level: config.logLevel,
+        level: testConfig().logLevel,
         base: { service: 'aliquot', role: 'api-test' },
       }),
       bufferLogs: false,
@@ -115,19 +188,22 @@ async function boot(): Promise<TestApp> {
   // `init()` and not `listen()`. Routes, middleware and lifecycle hooks are all
   // registered by init; only the socket is skipped.
   await app.init();
-  application = app;
+  return app;
+}
 
+function clientFor(app: NestFastifyApplication): TestApp {
   return {
     get: (path, options = {}) => send(app, 'GET', path, undefined, options),
     post: (path, body, options = {}) =>
       send(app, 'POST', path, body === undefined ? undefined : JSON.stringify(body), options),
     postRaw: (path, payload, options = {}) => send(app, 'POST', path, payload, options),
+    del: (path, options = {}) => send(app, 'DELETE', path, undefined, options),
   };
 }
 
 async function send<T>(
   app: NestFastifyApplication,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'DELETE',
   path: string,
   payload: string | undefined,
   options: RequestOptions,

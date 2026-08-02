@@ -40,6 +40,8 @@ export const ProblemType = {
   UNAUTHENTICATED: `${TYPE_BASE}/unauthenticated`,
   CHAIN_BROKEN: `${TYPE_BASE}/chain-broken`,
   CONFLICT: `${TYPE_BASE}/conflict`,
+  RATE_LIMITED: `${TYPE_BASE}/rate-limited`,
+  DEMO_UNAVAILABLE: `${TYPE_BASE}/demo-unavailable`,
   INTERNAL: `${TYPE_BASE}/internal`,
 } as const;
 
@@ -139,6 +141,39 @@ export class IdempotentRequestInFlightError extends AliquotError {
       `Key ${key} is being processed. Retry after ${retryAfterSeconds}s to collect the result.`,
       { idempotencyKey: key, retryAfterSeconds },
     );
+  }
+}
+
+/**
+ * Too many requests from one caller inside a window.
+ *
+ * `retryAfterSeconds` is both an extension member and the value the filter
+ * renders into the `Retry-After` header, for the same reason
+ * `IdempotentRequestInFlightError` carries one: a 429 without it invites an
+ * immediate retry, and a client that retries immediately turns a limiter into a
+ * busy loop it is paying for.
+ */
+export class RateLimitedError extends AliquotError {
+  constructor(
+    detail: string,
+    readonly retryAfterSeconds: number,
+  ) {
+    super(ProblemType.RATE_LIMITED, 429, 'Too many requests', detail, { retryAfterSeconds });
+  }
+}
+
+/**
+ * The demo is switched on but the data it is configured against is not there.
+ *
+ * 503 and not 401. The caller supplied nothing and got nothing wrong; the
+ * deployment is incompletely provisioned, and saying so is the only way an
+ * operator finds out. Minting a session for some other account, or creating the
+ * configured one on the fly, would turn a visible misconfiguration into a
+ * principal nobody decided to grant.
+ */
+export class DemoUnavailableError extends AliquotError {
+  constructor(detail: string) {
+    super(ProblemType.DEMO_UNAVAILABLE, 503, 'Demo dataset unavailable', detail);
   }
 }
 

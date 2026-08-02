@@ -4,6 +4,8 @@ import { APP_GUARD } from '@nestjs/core';
 import { AuditModule } from '../audit/audit.module';
 import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
+import { DemoRateLimiter } from './demo-rate-limiter';
+import { DemoReadOnlyGuard } from './demo-readonly.guard';
 import { IdentityController } from './identity.controller';
 import { IdentityService } from './identity.service';
 import { TenantRegistry } from './tenant-registry';
@@ -40,9 +42,18 @@ import { TenantRegistry } from './tenant-registry';
   providers: [
     AuthService,
     AuthGuard,
+    DemoReadOnlyGuard,
+    DemoRateLimiter,
     IdentityService,
     TenantRegistry,
     { provide: APP_GUARD, useExisting: AuthGuard },
+    // Ordered, not merely listed. Global guards run in registration order, and
+    // this one reads the `request.principal` that the guard above establishes;
+    // registered first it would find none on every request and would let a demo
+    // session mutate. `test/integration/demo-mode.spec.ts` asserts the outcome
+    // rather than the ordering, so a future reshuffle fails as a demo session
+    // successfully registering a run.
+    { provide: APP_GUARD, useExisting: DemoReadOnlyGuard },
   ],
   exports: [AuthService, AuthGuard],
 })

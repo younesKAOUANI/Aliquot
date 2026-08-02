@@ -283,6 +283,9 @@ export class AuthService {
       actorType: 'instrument',
       actorId: instrument.instrumentId,
       label: instrument.displayName,
+      // An instrument key is issued by a tenant administrator and is never
+      // handed out by the demo endpoint, which mints session tokens only.
+      isDemo: false,
     };
   }
 
@@ -322,6 +325,10 @@ export class AuthService {
       actorType: 'user',
       actorId: user.id,
       label: user.display_name,
+      // From the signed claim, not from the account. The same user could hold
+      // an ordinary session and a demo session at once, and only one of them is
+      // restricted.
+      isDemo: claims.demo === true,
     };
   }
 }

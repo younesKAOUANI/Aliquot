@@ -6,6 +6,7 @@ import { buildPage, decodeCursor } from '../common/cursor';
 import type { Page } from '../common/cursor';
 import {
   ConflictError,
+  DemoUnavailableError,
   ForbiddenError,
   NotFoundError,
   UnauthenticatedError,
@@ -133,6 +134,15 @@ export interface IssuedSession {
   expiresAt: string;
   user: { id: string; email: string; displayName: string; tenantId: string; tenantSlug: string };
   auditSeq: string;
+}
+
+export interface DemoSession extends IssuedSession {
+  /**
+   * Always true. It is on the response so a client can render the read-only
+   * banner without decoding the token, and so that a caller who somehow reached
+   * this endpoint expecting an ordinary session is told which one it got.
+   */
+  demo: true;
 }
 
 export interface PageQuery {
@@ -805,6 +815,118 @@ export class IdentityService {
             tenantSlug: input.tenantSlug,
           },
           auditSeq: event.seq,
+        };
+      },
+    );
+  }
+
+  /**
+   * Mint the one session the public demo is allowed to hand out.
+   *
+   * There is no input. That is the entire security argument, and it is the
+   * difference between this and `issueDevSession`: that method takes an email
+   * address and becomes whoever it names, so reaching it is equivalent to
+   * holding every credential in the tenant. Here the tenant, the account and the
+   * lifetime come from configuration fixed at boot, so a caller cannot influence
+   * the principal, cannot probe which addresses exist, and cannot obtain a
+   * session for anybody but the one account an operator deliberately published.
+   *
+   * A missing tenant or a missing account is a 503 naming the misconfiguration,
+   * never a fallback. Creating the account here would be a public endpoint
+   * writing a user row, and picking some other account would publish an
+   * identity nobody chose -- both turn "the demo is not seeded" into a silent,
+   * worse outcome.
+   *
+   * The session issuance is audited exactly as the development one is. A demo
+   * visitor therefore causes one append to the chain, which is the only write
+   * they can cause; leaving it out would make demo activity the one thing this
+   * service does not account for, in a service whose subject is accounting for
+   * things.
+   */
+  async issueDemoSession(correlationId: string): Promise<DemoSession> {
+    const { tenantSlug, userEmail, tokenTtlSeconds } = this.config.demo;
+
+    const tenantId = await this.registry.tenantIdForSlug(tenantSlug);
+    if (tenantId === null) {
+      throw new DemoUnavailableError(
+        `The demo dataset has not been seeded: no tenant with slug "${tenantSlug}" exists. ` +
+          'Run the seed against this database, or correct DEMO_TENANT_SLUG.',
+      );
+    }
+
+    return this.database.withTenant(
+      systemContext(tenantId, correlationId, { label: 'demo' }),
+      async (trx) => {
+        const user = await trx
+          .selectFrom('aliquot.app_user')
+          .select(['id', 'email', 'display_name', 'disabled_at'])
+          .where(sql<boolean>`lower(email) = lower(${userEmail})`)
+          .executeTakeFirst();
+
+        if (user === undefined) {
+          throw new DemoUnavailableError(
+            `The demo dataset has not been seeded: tenant "${tenantSlug}" has no account for the ` +
+              'configured demo user. Run the seed against this database, or correct DEMO_USER_EMAIL.',
+          );
+        }
+        if (user.disabled_at !== null) {
+          throw new DemoUnavailableError(
+            'The configured demo account has been disabled. Re-enable it, or point ' +
+              'DEMO_USER_EMAIL at an active account.',
+          );
+        }
+
+        const issued = signSession(this.config.auth.jwtSecret, {
+          userId: user.id,
+          tenantId,
+          ttlSeconds: tokenTtlSeconds,
+          demo: true,
+        });
+
+        // Same reasoning as `issueDevSession`: the event belongs to the user who
+        // now holds the session, so the session variables are re-applied before
+        // it is appended rather than leaving the trail reading as though the
+        // service signed itself in.
+        const sessionContext: RequestContext = {
+          tenantId,
+          actorType: 'user',
+          actorId: user.id,
+          actorLabel: user.display_name,
+          correlationId,
+          dbRole: 'aliquot_app',
+        };
+        await applySessionContext(trx, sessionContext);
+
+        const event = await this.audit.append(trx, sessionContext, {
+          action: 'session.issued',
+          targetType: 'app_user',
+          targetId: user.id,
+          payload: {
+            userId: user.id,
+            email: user.email,
+            sessionId: issued.claims.jti,
+            expiresAt: new Date(issued.claims.exp * 1000).toISOString(),
+            // Distinct from 'development-token-endpoint', so the trail
+            // distinguishes a session somebody chose the principal for from one
+            // handed to a passer-by.
+            mechanism: 'public-demo-endpoint',
+          },
+        });
+
+        return {
+          token: issued.token,
+          tokenType: 'Bearer',
+          expiresInSeconds: tokenTtlSeconds,
+          expiresAt: new Date(issued.claims.exp * 1000).toISOString(),
+          user: {
+            id: user.id,
+            email: user.email,
+            displayName: user.display_name,
+            tenantId,
+            tenantSlug,
+          },
+          auditSeq: event.seq,
+          demo: true,
         };
       },
     );

@@ -18,6 +18,15 @@ export interface Principal {
   actorType: 'user' | 'instrument';
   actorId: string;
   label: string;
+  /**
+   * True only for a session minted by `POST /v1/auth/demo`.
+   *
+   * Not optional. `DemoReadOnlyGuard` refuses a request when this is true, so
+   * an undefined that some future principal-producing path forgot to set would
+   * fail open, and the failure would be silent. A required boolean makes
+   * forgetting it a compile error.
+   */
+  isDemo: boolean;
 }
 
 /**
@@ -40,6 +49,16 @@ export interface AliquotRequest {
   headers: IncomingHttpHeaders;
   url: string;
   method: string;
+  /**
+   * Source address as Fastify resolved it, honouring `X-Forwarded-For` because
+   * the adapter is constructed with `trustProxy`.
+   *
+   * Optional because this interface describes the request as *our* code sees
+   * it, and the in-process injection the integration suite uses does not always
+   * carry one. A caller that needs it must decide what an absent address means
+   * rather than being handed a plausible default.
+   */
+  ip?: string;
 }
 
 /**

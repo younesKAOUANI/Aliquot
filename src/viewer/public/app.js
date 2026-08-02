@@ -10,11 +10,17 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 
 const state = {
   token: sessionStorage.getItem('aliquot.token') ?? '',
+  // Whether the session in hand came from the demo endpoint. Stored alongside
+  // the token rather than decoded out of it: the claim is there, but a viewer
+  // that parses JWTs to decide what to render starts looking like a viewer that
+  // trusts them.
+  demo: sessionStorage.getItem('aliquot.demo') === 'true',
   runsCursor: null,
   auditCursor: null,
 };
 
 $('#token').value = state.token;
+$('#demo-banner').hidden = !state.demo;
 
 // ---------------------------------------------------------------------------
 // transport
@@ -44,7 +50,12 @@ async function api(path, options = {}) {
       /* not json; the status line is all we have */
     }
     $('#error').textContent = detail;
-    throw new Error(detail);
+    // The status rides along on the error so a caller can distinguish "this
+    // deployment does not have that endpoint" from "that endpoint refused this
+    // request", which are different things to tell a reader.
+    const error = new Error(detail);
+    error.status = response.status;
+    throw error;
   }
 
   return response.status === 204 ? null : response.json();
@@ -54,9 +65,25 @@ async function api(path, options = {}) {
 // auth
 // ---------------------------------------------------------------------------
 
+function adoptSession(token, { demo, whoami }) {
+  state.token = token;
+  state.demo = demo;
+  sessionStorage.setItem('aliquot.token', token);
+  sessionStorage.setItem('aliquot.demo', String(demo));
+  $('#token').value = token;
+  $('#whoami').textContent = whoami;
+  $('#demo-banner').hidden = !demo;
+}
+
 $('#token').addEventListener('change', (event) => {
   state.token = event.target.value.trim();
   sessionStorage.setItem('aliquot.token', state.token);
+  // A pasted token is not a demo session until something says it is, and
+  // nothing here can say so without decoding it. Clearing the flag keeps the
+  // banner from outliving the session it described.
+  state.demo = false;
+  sessionStorage.setItem('aliquot.demo', 'false');
+  $('#demo-banner').hidden = true;
 });
 
 $('#signin').addEventListener('click', async () => {
@@ -75,12 +102,36 @@ $('#signin').addEventListener('click', async () => {
     method: 'POST',
     body: JSON.stringify({ email, tenantSlug }),
   });
-  state.token = result.token;
-  $('#token').value = result.token;
-  sessionStorage.setItem('aliquot.token', state.token);
   // The response nests the principal under `user`; reading result.displayName
   // silently yielded undefined and fell back to the email every time.
-  $('#whoami').textContent = result.user?.displayName ?? email;
+  adoptSession(result.token, { demo: false, whoami: result.user?.displayName ?? email });
+  await loadRuns(true);
+});
+
+// The whole of the demo sign-in. No body, because the endpoint takes none: the
+// principal is fixed by the deployment's configuration, so there is nothing for
+// this page to choose and nothing for a visitor to supply.
+$('#demo-signin').addEventListener('click', async () => {
+  let result;
+  try {
+    result = await api('/v1/auth/demo', { method: 'POST' });
+  } catch (error) {
+    // A deployment without DEMO_MODE answers 404, exactly as it does for a route
+    // that does not exist. Saying so on the button is more use to a reader than
+    // a problem document in the footer they have to scroll to. Any other
+    // failure -- a rate limit, an unseeded dataset -- is transient or
+    // actionable, so the button stays live for it.
+    if (error.status === 404) {
+      $('#demo-signin').disabled = true;
+      $('#demo-signin').textContent = 'Demo not enabled here';
+    }
+    return;
+  }
+
+  adoptSession(result.token, {
+    demo: result.demo === true,
+    whoami: result.user?.displayName ?? 'demo',
+  });
   await loadRuns(true);
 });
 
