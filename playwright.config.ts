@@ -28,6 +28,11 @@ export default defineConfig({
     baseURL: process.env.ALIQUOT_E2E_BASE_URL ?? 'http://localhost:3000',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
+    // Off by default, and deliberately opt-in rather than the other way round.
+    // Run against the real deployment and the suite validates its certificate
+    // chain as a browser would, which is a thing worth knowing; set this only
+    // when pointing at a stack using Caddy's internal CA locally.
+    ignoreHTTPSErrors: process.env.ALIQUOT_E2E_INSECURE_TLS === 'true',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
 });

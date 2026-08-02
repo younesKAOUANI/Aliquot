@@ -20,15 +20,35 @@ import { type Page, expect, test } from '@playwright/test';
 const ACME = { tenantSlug: 'acme', email: 'mara.okafor@acme.test' };
 const NORTHWIND = { tenantSlug: 'northwind', email: 'ines.duarte@northwind.test' };
 
+/**
+ * Which sign-in the stack under test offers, decided in globalSetup.
+ *
+ * AUTH_DEV_TOKEN_ENDPOINT and DEMO_MODE are mutually exclusive, so a stack has
+ * one or the other: development has the form, the public deployment has the
+ * demo button. Tests that are *about* the form skip when it is absent; tests
+ * about everything else take whichever door is open, so the suite means
+ * something when pointed at production.
+ */
+const DEV_SIGNIN = process.env.ALIQUOT_E2E_DEV_SIGNIN !== 'false';
+const DEMO_SIGNIN = process.env.ALIQUOT_E2E_DEMO_SIGNIN === 'true';
+
 async function signIn(page: Page, who: { tenantSlug: string; email: string }): Promise<void> {
   await page.goto('/');
-  await page.fill('#tenant', who.tenantSlug);
-  await page.fill('#email', who.email);
-  await page.click('#signin');
+
+  if (DEV_SIGNIN) {
+    await page.fill('#tenant', who.tenantSlug);
+    await page.fill('#email', who.email);
+    await page.click('#signin');
+  } else {
+    await page.click('#demo-signin');
+  }
+
   await expect(page.locator('#runs-table tbody tr')).not.toHaveCount(0);
 }
 
 test.describe('signing in', () => {
+  test.skip(!DEV_SIGNIN, 'the tenant+email form needs AUTH_DEV_TOKEN_ENDPOINT');
+
   test('regression: the tenant slug is sent, so sign-in succeeds', async ({ page }) => {
     // The reported bug. The viewer posted only { email } and the endpoint
     // answered 400 "body tenantSlug: Invalid input: expected string, received
@@ -136,7 +156,15 @@ test.describe('lineage', () => {
 
   test('offers the same graph as W3C PROV-JSON', async ({ page, request }) => {
     await signIn(page, ACME);
-    await page.locator('#runs-table tbody tr').first().click();
+    // A PROCESSED run specifically, as its sibling above does. The first row is
+    // whatever sorts first, which under one dataset was processed and under
+    // another was an OPEN run with nothing bound and therefore no lineage --
+    // the test was passing on the shape of the fixture rather than on the
+    // behaviour it names.
+    await page
+      .locator('#runs-table tbody tr', { has: page.locator('.badge.PROCESSED') })
+      .first()
+      .click();
     const boundEntry = page
       .locator('#run-detail tbody tr')
       .filter({ hasNot: page.locator('[data-artifact=""]') })
@@ -191,7 +219,48 @@ test.describe('audit chain', () => {
   });
 });
 
+test.describe('the read-only demo', () => {
+  /**
+   * Skipped unless the deployment under test has it switched on.
+   *
+   * `DEMO_MODE` and `AUTH_DEV_TOKEN_ENDPOINT` are mutually exclusive at startup
+   * -- they are different sign-in mechanisms with different threat models, and
+   * running both is a misconfiguration the service refuses to start with. The
+   * stack this suite normally runs against enables the development endpoint,
+   * because the seed and the twelve tests above sign in through it. So this test
+   * describes the *published* deployment: seed with the development endpoint on,
+   * then restart the API with `DEMO_MODE=true` and it off, which is exactly the
+   * sequence a deploy performs.
+   *
+   * Probing rather than reading configuration: the browser cannot see the
+   * server's environment, and a 404 from the endpoint is precisely the signal
+   * the viewer itself acts on.
+   */
+  // globalSetup already probed both sign-in mechanisms, so this reads the
+  // answer rather than asking again on every run.
+  test.skip(
+    !DEMO_SIGNIN,
+    'demo mode is off on this deployment; run the API with DEMO_MODE=true and ' +
+      'AUTH_DEV_TOKEN_ENDPOINT=false against an already-seeded database',
+  );
+
+  test('signs a stranger in and says the session is read-only', async ({ page }) => {
+    await page.goto('/');
+    // Nothing is typed. That is the point of the button: a visitor who was never
+    // given a credential does not have one to type.
+    await page.click('#demo-signin');
+
+    await expect(page.locator('#error')).toHaveText('');
+    await expect(page.locator('#token')).not.toHaveValue('');
+    await expect(page.locator('#runs-table tbody tr')).not.toHaveCount(0);
+    await expect(page.locator('#demo-banner')).toBeVisible();
+    await expect(page.locator('#demo-banner')).toContainText('Read-only');
+  });
+});
+
 test.describe('tenant isolation, as the browser sees it', () => {
+  test.skip(!DEV_SIGNIN, 'a demo session only ever reaches one tenant');
+
   test('a northwind session sees only northwind runs', async ({ page }) => {
     await signIn(page, ACME);
     const acmeStudies = new Set(
