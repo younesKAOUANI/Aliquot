@@ -1,0 +1,190 @@
+# Production stack for a single VPS.
+#
+# Differences from the development compose file, and the reason for each:
+#
+#   - Images are pulled from GHCR by digest-bearing tag rather than built here.
+#     A server that builds its own images is a server whose running code is not
+#     the code CI tested.
+#   - Nothing publishes a host port except Caddy. Postgres and MinIO are
+#     reachable only on the internal network, so the attack surface is one TLS
+#     listener rather than four open ports.
+#   - Every secret comes from the environment. There are no credentials in this
+#     file, which is why -- unlike the development one -- it is safe to read.
+#   - Restart policies and log rotation exist, because an unattended box fills
+#     its disk with JSON logs in about a fortnight otherwise.
+#
+# Deploy with:
+#   docker compose -f deploy/docker-compose.prod.yml --env-file /etc/aliquot/aliquot.env up -d
+#
+# See docs/DEPLOYMENT.md for the full runbook.
+
+name: aliquot
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '3'
+
+x-app-env: &app-env
+  NODE_ENV: production
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  DATABASE_URL: postgres://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  # Storage is deliberately fully env-driven. Pointing STORAGE_ENDPOINT at
+  # Cloudflare R2 or S3 instead of the bundled MinIO is a configuration change
+  # and nothing else -- see docs/DEPLOYMENT.md.
+  STORAGE_ENDPOINT: ${STORAGE_ENDPOINT}
+  STORAGE_REGION: ${STORAGE_REGION:-auto}
+  STORAGE_BUCKET: ${STORAGE_BUCKET}
+  STORAGE_ACCESS_KEY_ID: ${STORAGE_ACCESS_KEY_ID}
+  STORAGE_SECRET_ACCESS_KEY: ${STORAGE_SECRET_ACCESS_KEY}
+  STORAGE_FORCE_PATH_STYLE: ${STORAGE_FORCE_PATH_STYLE:-true}
+  STORAGE_PRESIGN_TTL_SECONDS: ${STORAGE_PRESIGN_TTL_SECONDS:-3600}
+  AUTH_JWT_SECRET: ${AUTH_JWT_SECRET}
+  # Never enabled here. It mints a session for an arbitrary email address, and
+  # the service refuses to start with it on when NODE_ENV=production.
+  AUTH_DEV_TOKEN_ENDPOINT: 'false'
+  DEMO_MODE: ${DEMO_MODE:-true}
+  DEMO_TENANT_SLUG: ${DEMO_TENANT_SLUG:-acme}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Bind-mounted so scripts/backup.sh can drop dumps where the host can see
+      # them without reaching into the container filesystem.
+      - ${BACKUP_DIR:-/var/backups/aliquot}:/backups
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    logging: *logging
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY_ID}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_ACCESS_KEY}
+      # Presigned URLs are signed for a specific host. The browser and the
+      # worker have to reach the object store under the SAME name or every
+      # signature fails on one side of the fence, so MinIO is told its public
+      # address explicitly and Caddy proxies that hostname to it.
+      MINIO_BROWSER_REDIRECT_URL: https://${STORAGE_DOMAIN}/console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    profiles: ['bundled-storage']
+
+  # One-shot, ordered before the API. Applying migrations from the same image
+  # that runs the code means the two cannot drift by a deploy.
+  migrate:
+    image: ${ALIQUOT_IMAGE:-ghcr.io/youneskaouani/aliquot:latest}
+    restart: 'no'
+    logging: *logging
+    command: ['node', 'dist/scripts/migrate.js']
+    environment:
+      DATABASE_ADMIN_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      APP_DB_USER: ${APP_DB_USER}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    image: ${ALIQUOT_IMAGE:-ghcr.io/youneskaouani/aliquot:latest}
+    restart: unless-stopped
+    logging: *logging
+    command: ['node', 'dist/src/main.js']
+    environment:
+      <<: *app-env
+      SERVICE_ROLE: api
+      PORT: 3000
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://localhost:3000/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # Deliberately no `ports`. Caddy is the only thing the internet can reach.
+
+  worker:
+    image: ${ALIQUOT_IMAGE:-ghcr.io/youneskaouani/aliquot:latest}
+    restart: unless-stopped
+    logging: *logging
+    command: ['node', 'dist/src/worker.js']
+    environment:
+      <<: *app-env
+      SERVICE_ROLE: worker
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    logging: *logging
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    environment:
+      ALIQUOT_DOMAIN: ${ALIQUOT_DOMAIN}
+      STORAGE_DOMAIN: ${STORAGE_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and the ACME account key. Losing this volume means
+      # re-issuing every certificate, which Let's Encrypt rate-limits.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # Profiled, so a redeploy never re-runs it by accident. The seed is idempotent
+  # and still: `up -d` should not be able to touch data.
+  #   docker compose -f deploy/docker-compose.prod.yml --profile seed run --rm seed
+  seed:
+    image: ${ALIQUOT_IMAGE:-ghcr.io/youneskaouani/aliquot:latest}
+    restart: 'no'
+    logging: *logging
+    command: ['node', 'dist/scripts/seed.js']
+    environment:
+      <<: *app-env
+      SERVICE_ROLE: api
+      DATABASE_ADMIN_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      API_BASE_URL: http://api:3000
+    depends_on:
+      api:
+        condition: service_healthy
+    profiles: ['seed']
+
+volumes:
+  postgres-data:
+  minio-data:
+  caddy-data:
+  caddy-config:

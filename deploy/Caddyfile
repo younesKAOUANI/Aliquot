@@ -1,0 +1,115 @@
+# Caddy is the only process the internet can reach. Everything else in the
+# stack listens on the internal Docker network and publishes no host port.
+#
+# TLS is automatic: Caddy obtains and renews certificates from Let's Encrypt
+# over HTTP-01. That is the entire reason it is here rather than nginx --
+# certificate renewal is the part of a small deployment most likely to be
+# forgotten until the morning it expires.
+
+{
+	email {$ACME_EMAIL}
+	# Caddy's own access log; the application logs structured JSON separately.
+	log {
+		format json
+	}
+	servers {
+		# The API issues presigned URLs and accepts large manifests; it never
+		# accepts large bodies. 10s is generous for a control plane and short
+		# enough to shed a slowloris.
+		timeouts {
+			read_body 10s
+			read_header 5s
+			idle 2m
+		}
+	}
+}
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# The viewer is plain ES modules with no inline handlers and no CDN, so
+		# it can take a genuinely restrictive policy rather than a decorative
+		# one. connect-src includes the storage host because a download is a
+		# redirect to a presigned URL there.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://{$STORAGE_DOMAIN}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+		-Server
+	}
+}
+
+{$ALIQUOT_DOMAIN} {
+	import security_headers
+
+	log {
+		output stdout
+		format json
+	}
+
+	encode zstd gzip
+
+	# Liveness and readiness are not interesting to the public and are noisy in
+	# the access log. They stay reachable -- an uptime monitor needs them --
+	# they simply are not logged.
+	@health path /healthz /readyz
+	handle @health {
+		log_skip
+		reverse_proxy api:3000
+	}
+
+	# The dev token endpoint mints a session for an arbitrary email address. The
+	# service already refuses to start with it enabled in production; blocking
+	# it at the edge as well means a misconfigured container cannot expose it
+	# even for the seconds before a health check notices.
+	@dev_token path /v1/auth/token
+	handle @dev_token {
+		respond "Not found" 404
+	}
+
+	handle {
+		reverse_proxy api:3000 {
+			header_up X-Real-IP {remote_host}
+			# The demo rate limiter keys on client IP, so the application has to
+			# see the real one rather than the proxy's.
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+}
+
+# Object storage, under its own name.
+#
+# This block exists because of one specific constraint: a presigned URL is
+# signed for a particular host, and the browser doing the upload and the worker
+# reading the bytes back must both resolve that host to the same store. Serving
+# MinIO under a public name that the API also uses internally is what makes a
+# single signature valid on both sides.
+#
+# When STORAGE_ENDPOINT points at Cloudflare R2 or S3 instead, this whole block
+# becomes unnecessary -- their endpoint is already public and identical from
+# everywhere. Comment it out and drop the DNS record.
+{$STORAGE_DOMAIN} {
+	log {
+		output stdout
+		format json
+	}
+
+	# The MinIO console is an administrative surface and has no business being
+	# reachable from the internet. Reach it over an SSH tunnel instead:
+	#   ssh -L 9001:localhost:9001 user@host
+	@console path /console*
+	handle @console {
+		respond "Not found" 404
+	}
+
+	handle {
+		reverse_proxy minio:9000 {
+			# Large objects stream through here. Caddy buffers nothing by
+			# default, which is what we want: the point of presigned upload is
+			# that bytes do not queue in an application process, and they should
+			# not queue in the proxy either.
+			flush_interval -1
+		}
+	}
+}
