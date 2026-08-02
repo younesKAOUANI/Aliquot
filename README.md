@@ -37,6 +37,7 @@ API at <http://localhost:3000>, docs at `/docs`, read-only viewer at `/`.
 - [Design decisions](#design-decisions)
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
+- [Deployment](#deployment)
 - [What I would do differently at scale](#what-i-would-do-differently-at-scale)
 - [Project layout](#project-layout)
 
@@ -666,6 +667,45 @@ compose network. Run the client there: `docker compose run --rm demo`.
 `DATABASE_URL` points at a superuser or a `BYPASSRLS` role. Use the unprivileged
 login role that `scripts/migrate.ts` creates. This check is deliberate: a
 privileged role disables isolation while every test still passes.
+
+---
+
+## Deployment
+
+Live at <https://aliquot.youneskaouani.dev>. One VPS, Docker Compose, Caddy
+terminating TLS with certificates it renews itself, images from GHCR, deploys
+from GitHub Actions behind an approval gate.
+
+```
+deploy/
+  bootstrap.sh              one-time host prep: docker, firewall, ssh, backups
+  docker-compose.prod.yml   the production stack
+  Caddyfile                 TLS, security headers, edge blocks
+  deploy.sh                 migrate-then-switch, with a rollback path
+  backup.sh                 nightly dumps, verified readable
+  restore.sh                destructive, and says so twice
+  aliquot.env.example       every secret, documented
+```
+
+Three properties worth stating:
+
+- **Migrations run to completion before any new container serves traffic**, and
+  the deploy aborts if they fail. A bad migration never leaves half the stack on
+  a schema the rest does not have.
+- **Only Caddy publishes a host port.** Postgres and MinIO are reachable only on
+  the internal network, so the externally reachable surface is one TLS listener.
+- **The dev token endpoint is unreachable three times over** — the service
+  refuses to boot with it enabled in production, the compose file hard-codes it
+  off, and Caddy 404s the route. The deploy workflow asserts that 404 from the
+  public internet after every release, because three layers you never check is
+  one layer you are guessing about.
+
+Public access is a read-only demo session: no request body, one pre-seeded
+account, and every mutating verb refused by a guard rather than by a role check
+([ADR-0020](docs/adr/0020-read-only-demo-access-for-a-public-deployment.md)).
+
+Full runbook, including rollback, restore, storage options and an honest list of
+what this deployment is *not*: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
 ---
 
