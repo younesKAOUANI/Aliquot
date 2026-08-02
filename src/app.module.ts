@@ -1,10 +1,8 @@
 import { Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
 
 import { AuditModule } from './audit/audit.module';
 import { CoreModule } from './core.module';
 import { HttpModule } from './http/http.module';
-import { AuthGuard } from './identity/auth.guard';
 import { IdentityModule } from './identity/identity.module';
 import { IngestionModule } from './ingestion/ingestion.module';
 import { ProcessingModule } from './processing/processing.module';
@@ -32,12 +30,9 @@ import { UploadsModule } from './uploads/uploads.module';
     ProvenanceModule,
     ProcessingModule,
   ],
-  providers: [
-    // Authentication is on by default and opted out of per route with
-    // @Public(). The alternative -- opting in with a decorator on every guarded
-    // route -- fails open: a new endpoint written without the decorator is
-    // simply unauthenticated, and nothing about it looks wrong in review.
-    { provide: APP_GUARD, useClass: AuthGuard },
-  ],
+  // The global guards -- AuthGuard, then DemoReadOnlyGuard -- are bound by
+  // IdentityModule, which owns them. Binding AuthGuard here as well registers it
+  // twice and Nest runs it twice per request, which for an instrument credential
+  // means a second scrypt derivation on the hot path for no benefit.
 })
 export class AppModule {}
