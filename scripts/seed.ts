@@ -39,6 +39,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import { z } from 'zod';
 
+import { signSession } from '../src/identity/tokens';
+
 const API_BASE_URL = (process.env.API_BASE_URL ?? 'http://localhost:3000').replace(/\/+$/, '');
 
 /** Long enough for a cold JIT and a first-request connection pool; short of a hang. */
@@ -116,6 +118,9 @@ async function main(): Promise<void> {
   await waitForApi();
 
   const client = new Client({ connectionString: adminUrl });
+  // Published so issueToken() can resolve a user without every call site
+  // threading the connection through.
+  adminClient = client;
   await client.connect();
 
   try {
@@ -533,23 +538,56 @@ async function rotateEveryInstrumentKey(client: Client): Promise<Map<string, str
   return keys;
 }
 
-const tokenSchema = z.object({
-  token: z.string(),
-  expiresInSeconds: z.number(),
-  user: z.object({ id: z.string(), email: z.string(), tenantId: z.string() }),
-});
+/**
+ * The admin connection, kept module-scope so `issueToken` can resolve a user
+ * without every caller threading it through. A script may do this; a service
+ * may not.
+ */
+let adminClient: Client | undefined;
 
+/**
+ * Sign a session for a seeded user, locally.
+ *
+ * This used to POST to `/v1/auth/token`, and that made the seed unusable
+ * against the deployment it exists to populate: that endpoint mints a session
+ * for an arbitrary email address, so the service refuses to start with it
+ * enabled in production, and `DEMO_MODE` is mutually exclusive with it. Seeding
+ * would have meant booting the API once with the bypass on, seeding, and
+ * restarting with it off -- a three-step dance around a guard, which is how
+ * guards end up switched off permanently.
+ *
+ * Signing here needs no endpoint at all. The seed already holds
+ * `AUTH_JWT_SECRET` and the owner database credentials, so it is not acquiring
+ * any authority it did not have; it is declining to route through a public
+ * bypass to use authority it already has.
+ */
 async function issueToken(email: string, tenantSlug: string): Promise<string> {
-  const response = await api('POST', '/v1/auth/token', { body: { email, tenantSlug } });
-
-  if (response.status === 404) {
-    throw new Error(
-      'POST /v1/auth/token is not enabled on this API. The seed signs in as a real user ' +
-        'rather than forging a token, so it needs AUTH_DEV_TOKEN_ENDPOINT=true.',
-    );
+  const secret = process.env.AUTH_JWT_SECRET;
+  if (secret === undefined || secret.length < 32) {
+    throw new Error('AUTH_JWT_SECRET must be set (32+ characters) for the seed to sign sessions');
+  }
+  if (adminClient === undefined) {
+    throw new Error('the admin connection is not open; issueToken ran outside main()');
   }
 
-  return tokenSchema.parse(expect(response, [200], `sign in as ${email}`)).token;
+  const found = await adminClient.query<{ user_id: string; tenant_id: string }>(
+    `select u.id as user_id, t.id as tenant_id
+       from aliquot.app_user u
+       join aliquot.tenant t on t.id = u.tenant_id
+      where t.slug = $1 and lower(u.email) = lower($2) and u.disabled_at is null`,
+    [tenantSlug, email],
+  );
+
+  const row = found.rows[0];
+  if (row === undefined) {
+    throw new Error(`no active user ${email} in tenant ${tenantSlug}`);
+  }
+
+  return signSession(secret, {
+    userId: row.user_id,
+    tenantId: row.tenant_id,
+    ttlSeconds: 3600,
+  }).token;
 }
 
 // ---------------------------------------------------------------------------
@@ -1138,11 +1176,26 @@ async function printSummary(client: Client, keys: Map<string, string>): Promise<
 
   console.log('');
   console.log('-'.repeat(78));
-  console.log('Tokens above expire; mint another with');
+  console.log('Tokens above expire. How to get another depends on how this API is configured,');
+  console.log('so ask it rather than guessing:');
   console.log('');
-  console.log(`  curl -s ${API_BASE_URL}/v1/auth/token \\`);
-  console.log("    -H 'content-type: application/json' \\");
-  console.log(`    -d '{"email":"${email ?? ACME.admin.email}","tenantSlug":"${PRIMARY_TENANT}"}'`);
+
+  // The dev endpoint is absent in any production deployment -- it mints a
+  // session for an arbitrary address -- so printing it unconditionally would
+  // hand an operator a command that answers 404 and no clue why.
+  const demoAvailable = (await api('POST', '/v1/auth/demo')).status !== 404;
+  if (demoAvailable) {
+    console.log('  # read-only demo session, no body, no credentials:');
+    console.log(`  curl -s -X POST ${API_BASE_URL}/v1/auth/demo`);
+  } else {
+    console.log('  # development sign-in (AUTH_DEV_TOKEN_ENDPOINT=true):');
+    console.log(`  curl -s ${API_BASE_URL}/v1/auth/token \\`);
+    console.log("    -H 'content-type: application/json' \\");
+    console.log(
+      `    -d '{"email":"${email ?? ACME.admin.email}","tenantSlug":"${PRIMARY_TENANT}"}'`,
+    );
+  }
+
   console.log('');
   console.log(`Viewer: ${API_BASE_URL}/   OpenAPI: ${API_BASE_URL}/docs`);
   console.log('-'.repeat(78));
