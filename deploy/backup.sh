@@ -14,6 +14,14 @@ ENV_FILE="${ENV_FILE:-/etc/aliquot/aliquot.env}"
 COMPOSE_FILE="${DEPLOY_DIR}/docker-compose.prod.yml"
 RETAIN_DAYS="${BACKUP_RETAIN_DAYS:-14}"
 
+# Every path below is absolute, but `docker compose` still stats the working
+# directory, and this runs from wherever it was invoked -- deploy.sh has already
+# cd'd here, cron starts in the user's home, and a hand-run from somewhere the
+# deploy user cannot read fails with
+#   error in parsing "compose-spec.json": stat .: permission denied
+# which names neither the directory nor the backup. Anchor it.
+cd "$DEPLOY_DIR"
+
 # shellcheck disable=SC1090
 set -a && . "$ENV_FILE" && set +a
 
