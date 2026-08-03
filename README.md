@@ -672,15 +672,19 @@ privileged role disables isolation while every test still passes.
 
 ## Deployment
 
-Live at <https://aliquot.youneskaouani.dev>. One VPS, Docker Compose, Caddy
-terminating TLS with certificates it renews itself, images from GHCR, deploys
-from GitHub Actions behind an approval gate.
+Live at <https://aliquot.youneskaouani.dev>. Docker Compose, images from GHCR,
+deploys from GitHub Actions behind an approval gate, objects in Cloudflare R2.
+
+The VPS is shared with two other projects, so TLS is not in this repository: a
+single edge Caddy terminates for every name on the box and reaches this stack by
+container alias. Its runbook, and the host preparation both, live in the
+[`deploy/edge`](https://github.com/younesKAOUANI/portfolio/tree/main/deploy/edge)
+directory of the portfolio repository.
 
 ```
 deploy/
   bootstrap.sh              one-time host prep: docker, firewall, ssh, backups
   docker-compose.prod.yml   the production stack
-  Caddyfile                 TLS, security headers, edge blocks
   deploy.sh                 migrate-then-switch, with a rollback path
   backup.sh                 nightly dumps, verified readable
   restore.sh                destructive, and says so twice
@@ -692,8 +696,9 @@ Three properties worth stating:
 - **Migrations run to completion before any new container serves traffic**, and
   the deploy aborts if they fail. A bad migration never leaves half the stack on
   a schema the rest does not have.
-- **Only Caddy publishes a host port.** Postgres and MinIO are reachable only on
-  the internal network, so the externally reachable surface is one TLS listener.
+- **Nothing in this stack publishes a host port.** The box is shared with two
+  other projects and one edge Caddy terminates TLS for all of them; the API is
+  reachable only by container alias on that network, and Postgres not at all.
 - **The dev token endpoint is unreachable three times over** — the service
   refuses to boot with it enabled in production, the compose file hard-codes it
   off, and Caddy 404s the route. The deploy workflow asserts that 404 from the

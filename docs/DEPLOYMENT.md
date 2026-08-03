@@ -1,9 +1,13 @@
 # Deployment
 
-Aliquot at <https://aliquot.youneskaouani.dev>: one VPS, Docker Compose, Caddy
-for TLS, images from GHCR, deploys from GitHub Actions behind an approval gate.
+Aliquot at <https://aliquot.youneskaouani.dev>: Docker Compose, images from
+GHCR, deploys from GitHub Actions behind an approval gate.
 
-This is the runbook. It assumes nothing about the reader except a shell.
+It shares a VPS with two other projects. **TLS is not in this repository** — a
+shared edge Caddy terminates for every name on the box, and its runbook, the
+host preparation and the DNS list all live in the [`deploy/edge`](https://github.com/younesKAOUANI/portfolio/tree/main/deploy/edge)
+directory of the portfolio repository. Read that first if you are setting the
+machine up from nothing; this document covers Aliquot alone.
 
 ---
 
@@ -14,22 +18,24 @@ This is the runbook. It assumes nothing about the reader except a shell.
                             │
                      :80 :443 (only open ports)
                             │
+                    ┌───────▼────────┐
+                    │  edge / caddy  │  shared: TLS for all three sites
+                    └───────┬────────┘
+          aliquot.…dev      │   docker network `edge`
                      ┌──────▼──────┐
-                     │    Caddy    │  TLS from Let's Encrypt, auto-renewed
-                     └──┬───────┬──┘
-        aliquot.…dev    │       │   storage.aliquot.…dev
-                     ┌──▼──┐ ┌──▼────┐
-                     │ api │ │ minio │
-                     └──┬──┘ └───┬───┘
-                        │        │
-                   ┌────▼────┐   │
-                   │ postgres│◀──┴── worker
-                   └─────────┘
+                     │ aliquot-api │
+                     └──────┬──────┘
+                            │  project network
+                     ┌──────▼──────┐
+                     │  postgres   │◀── worker
+                     └─────────────┘
+
+                 objects ──► Cloudflare R2 (off the box)
 ```
 
-Nothing except Caddy publishes a host port. Postgres and MinIO are reachable
-only on the internal Docker network, so the externally reachable surface is one
-TLS listener rather than four services.
+This stack publishes **no host port at all**. The API is reachable only by its
+container alias on the shared `edge` network; Postgres is on the project network
+and has no route in from anywhere.
 
 **Two processes from one image.** `SERVICE_ROLE` selects which entrypoint runs.
 They share the composition root, so the worker exercises the code paths the API
@@ -41,14 +47,10 @@ was tested with rather than a parallel wiring that can drift.
 
 | | |
 |---|---|
-| VPS | 2 vCPU / 4 GB / 40 GB is comfortable. Debian 12 or Ubuntu 24.04. |
-| DNS | `A` records for `aliquot.youneskaouani.dev` and, while using bundled storage, `storage.aliquot.youneskaouani.dev` |
+| Host | Prepared per the edge runbook, with the `edge` docker network created. |
+| DNS | An `A` record for `aliquot.youneskaouani.dev`, set before the edge Caddy first starts. |
+| Storage | A Cloudflare R2 bucket and a scoped API token. |
 | GitHub | An environment named `production` holding the deploy secrets |
-
-**Set DNS before the first deploy.** Caddy obtains certificates over HTTP-01,
-which requires the names to resolve to the box. Let's Encrypt rate-limits
-failures, so a deploy against unresolved DNS costs you an hour of waiting rather
-than a retry.
 
 ---
 
@@ -56,16 +58,22 @@ than a retry.
 
 ### 1. Prepare the host
 
+Once for the whole box, not once per project — see the edge runbook. In short:
+
 ```bash
 ssh root@<host>
 curl -fsSL https://raw.githubusercontent.com/younesKAOUANI/Aliquot/main/deploy/bootstrap.sh -o bootstrap.sh
 less bootstrap.sh          # it is short; read it
-bash bootstrap.sh
+DEPLOY_USER=deploy bash bootstrap.sh
+docker network create edge
 ```
 
-Installs Docker, creates the `aliquot` user, opens only 22/80/443, disables SSH
+Installs Docker, creates the deploy user, opens only 22/80/443, disables SSH
 password authentication, enables unattended security updates and `fail2ban`, and
 schedules a nightly backup. It installs no secrets and starts nothing.
+
+It calls `ufw --force reset`, so run it **first and once**. On a box already
+serving the other two sites it resets the firewall out from under them.
 
 > The deploy user is in the `docker` group, which on this box is equivalent to
 > root. That is a deliberate trade — rootless Docker is tighter and costs more
@@ -83,7 +91,7 @@ ssh-keygen -t ed25519 -f ~/.ssh/aliquot-deploy -C 'github-actions@aliquot' -N ''
 Public half onto the box:
 
 ```bash
-ssh-copy-id -i ~/.ssh/aliquot-deploy.pub aliquot@<host>
+ssh-copy-id -i ~/.ssh/aliquot-deploy.pub deploy@<host>
 ```
 
 Private half into the GitHub environment secret `DEPLOY_SSH_KEY`.
@@ -111,7 +119,7 @@ a decision rather than a side effect of merging, then add:
 | Secret | Value |
 |---|---|
 | `DEPLOY_HOST` | the VPS address |
-| `DEPLOY_USER` | `aliquot` |
+| `DEPLOY_USER` | `deploy` |
 | `DEPLOY_SSH_KEY` | the private key from step 2 |
 | `DEPLOY_KNOWN_HOSTS` | output of `ssh-keyscan -t ed25519 <host>` |
 | `DEPLOY_PORT` | optional, defaults to 22 |
@@ -137,7 +145,7 @@ gh workflow run deploy.yml      # approve when prompted
 Once, deliberately, because it is not part of a normal deploy:
 
 ```bash
-ssh aliquot@<host>
+ssh deploy@<host>
 cd /opt/aliquot
 docker compose -f docker-compose.prod.yml --env-file /etc/aliquot/aliquot.env \
   --profile seed run --rm seed
@@ -170,7 +178,7 @@ on a schema the rest does not have.
 ### Rolling back
 
 ```bash
-ssh aliquot@<host>
+ssh deploy@<host>
 cat /opt/aliquot/.previous-image                    # what was running before
 ALIQUOT_IMAGE=ghcr.io/youneskaouani/aliquot:sha-<older> bash /opt/aliquot/deploy.sh
 ```
@@ -197,10 +205,12 @@ transaction, and prints each tenant's audit event count so you can verify the
 chain survived. **Restore into a scratch database and read the result at least
 once** — a backup nobody has restored is a hypothesis.
 
-> The database is backed up. Object storage, when bundled, is **not** — MinIO's
-> volume is one disk on one box. `docker run --rm -v aliquot_minio-data:/data
-> -v /var/backups:/backup alpine tar czf /backup/minio-$(date -u +%F).tgz /data`
-> is the crude version; moving to R2 or S3 is the real answer.
+> The database is backed up here. Objects are not, and do not need to be from
+> this box: R2 holds them, replicated, off the machine. What is *not* covered
+> either way is the pairing — a restored database references object keys, and if
+> the bucket has been emptied since the dump those runs come back as metadata
+> pointing at nothing. The system reports that honestly as a storage error
+> rather than pretending the artifact is fine, but it is still data loss.
 
 ### Logs
 
@@ -218,57 +228,51 @@ the edge is stored on the job row and restored by the worker, so both halves of
 docker compose ... logs api | jq -c 'select(.correlationId=="<id>")'
 ```
 
-### The MinIO console
-
-Deliberately 404 from the internet. Reach it over SSH:
-
-```bash
-ssh -L 9001:localhost:9001 aliquot@<host>
-# then http://localhost:9001
-```
-
 ---
 
 ## Object storage
 
-The one deployment decision with a real constraint behind it.
+Cloudflare R2, addressed as S3. The application speaks nothing else, so AWS S3
+or any S3-compatible endpoint is a change of five values in
+`/etc/aliquot/aliquot.env`:
+
+```
+STORAGE_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+STORAGE_BUCKET=aliquot
+STORAGE_ACCESS_KEY_ID=<r2 access key>
+STORAGE_SECRET_ACCESS_KEY=<r2 secret>
+STORAGE_FORCE_PATH_STYLE=true
+STORAGE_REGION=auto
+```
+
+`STORAGE_ENDPOINT` is the **account** endpoint from R2 → bucket → Settings →
+S3 API, not the public bucket URL. Scope the token to Object Read & Write on
+this bucket alone.
+
+**Set the bucket's CORS policy** to allow `PUT` and `GET` from
+`https://aliquot.youneskaouani.dev`. Miss it and browser uploads fail with an
+opaque network error while `curl` against the very same presigned URL succeeds,
+which is a genuinely nasty hour.
+
+### Why not a bundled object store
+
+The deployment used to ship MinIO alongside, and the reason it no longer does is
+worth keeping:
 
 **A presigned URL is signed for a specific hostname.** The browser performing an
 upload and the worker reading the bytes back must resolve that hostname to the
-same store, or every signature fails on one side of the fence. This is why
-`storage.aliquot.youneskaouani.dev` exists as a public name rather than the API
-handing out `http://minio:9000`.
+same store, or every signature fails on one side of the fence. Self-hosting the
+store therefore means giving it a public name and a certificate purely to
+satisfy that constraint — and then owning durability for a single disk on a
+single box that the nightly database dump does not cover.
 
-### Bundled MinIO (default)
+R2's endpoint already resolves identically from everywhere, so the constraint
+disappears rather than being worked around. On a host now shared with two other
+projects, one fewer stateful container is worth more than the independence.
 
-```
-BUNDLED_STORAGE=true
-STORAGE_ENDPOINT=https://storage.aliquot.youneskaouani.dev
-STORAGE_FORCE_PATH_STYLE=true
-```
-
-No external account. You own durability, and single-node MinIO on one disk means
-one disk is the whole story.
-
-### Cloudflare R2 or S3
-
-```
-BUNDLED_STORAGE=false
-STORAGE_ENDPOINT=https://<account>.r2.cloudflarestorage.com
-STORAGE_REGION=auto
-STORAGE_ACCESS_KEY_ID=<key>
-STORAGE_SECRET_ACCESS_KEY=<secret>
-```
-
-Then comment out the `{$STORAGE_DOMAIN}` block in the `Caddyfile` and drop that
-DNS record. Nothing else changes — the application talks S3 either way, and the
-presigned-URL constraint disappears because their endpoint already resolves
-identically from everywhere.
-
-Switching later does **not** migrate existing objects. Copy them first
-(`rclone sync`), or accept that older artifacts become unreadable while their
-metadata and audit history remain — which the system will report honestly as a
-storage error rather than pretending the data is fine.
+If you ever switch back or sideways, note that it does **not** migrate existing
+objects. Copy them first (`rclone sync`), or accept that older artifacts become
+unreadable while their metadata and audit history remain.
 
 ---
 
@@ -288,7 +292,12 @@ What is deliberately true of this deployment:
   `BYPASSRLS` and no superuser bit. It asserts this at startup and refuses to
   boot otherwise, because a privileged role silently disables tenant isolation
   while every test still passes.
-- **Only 22, 80 and 443 are open**, and only Caddy publishes a host port.
+- **Only 22, 80 and 443 are open**, and this stack publishes no host port at
+  all — the shared edge Caddy is the only process on the box the internet can
+  reach.
+- **The client address cannot be forged.** The demo rate limiter keys on it, and
+  Caddy sets `X-Forwarded-For` from the real peer and discards whatever the
+  caller sent, rather than appending to it.
 - **Secrets live in one root-owned file** at `/etc/aliquot/aliquot.env`, mode
   600, never in the repository and never in an image layer.
 - **Images carry an SBOM and a build provenance attestation.** A service whose
@@ -309,10 +318,16 @@ docker compose -f docker-compose.prod.yml --env-file /etc/aliquot/aliquot.env up
 
 ## Troubleshooting
 
+**502 from the edge**
+The API container is down, or it is up but not attached to the `edge` network —
+which happens when the stack came up before that network existed.
+`docker network inspect edge` lists what is actually on it.
+
 **Caddy will not get a certificate**
-DNS must resolve to the box *before* Caddy starts, and port 80 must be reachable
-for HTTP-01. Check `docker compose logs caddy`. Let's Encrypt rate-limits
-failures — fix DNS, then wait rather than retrying in a loop.
+Not this repository's Caddy any more. DNS for `aliquot.youneskaouani.dev` must
+resolve to the box *before* the edge Caddy tries, and port 80 must be reachable
+for HTTP-01. `docker compose logs caddy` in the edge directory. Let's Encrypt
+rate-limits failures — fix DNS, then wait rather than retrying in a loop.
 
 **`refusing to start: row-level security would not be enforced`**
 `DATABASE_URL` points at a superuser or a `BYPASSRLS` role. Use `APP_DB_USER`,
@@ -322,10 +337,14 @@ which `migrate` creates. Working as designed.
 `STORAGE_ENDPOINT` is not the hostname the browser used. Both sides must agree —
 see [Object storage](#object-storage).
 
+**Uploads fail in the browser but the same presigned URL works with `curl`**
+CORS on the bucket. `curl` does not send an `Origin` header and does not enforce
+the response, so it is the one client that cannot see this problem.
+
 **`/readyz` is 503 but `/healthz` is 200**
-Readiness includes object storage. The API is up and MinIO or R2 is not. A
-service that accepts registrations it cannot fulfil is worse than one that
-refuses them.
+Readiness includes object storage. The API is up and R2 is not reachable, or the
+credentials are wrong. A service that accepts registrations it cannot fulfil is
+worse than one that refuses them.
 
 **The deploy succeeded and the site is unchanged**
 Check the deployed digest: `docker inspect --format '{{.Config.Image}}'
@@ -344,9 +363,13 @@ file left no trace. Read `docker compose logs migrate`, fix forward, redeploy.
 Stated plainly, because a deployment document that only lists strengths is a
 sales sheet.
 
-- **Single point of failure at every layer.** One box, one Postgres, one MinIO,
-  no replication. A disk failure loses everything since the last nightly dump,
-  and object storage is not in that dump.
+- **Single point of failure at every layer.** One box, one Postgres, no
+  replication. A disk failure loses everything since the last nightly dump.
+  Objects survive it — they are in R2 — but the database rows that name them may
+  not, and the two are only useful together.
+- **The box is shared.** Three projects, one kernel, one disk, one edge. A
+  runaway container starves the other two, and a `docker compose down` in the
+  wrong directory is a live outage for someone else's site.
 - **No zero-downtime deploy.** `up -d` restarts the API; requests in flight
   fail. At this traffic that is a second of 502 nobody sees, and it is still
   true.

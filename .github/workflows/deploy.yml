@@ -93,7 +93,7 @@ jobs:
           # aborts if it fails, so shipping the deploy script without it turns
           # every release into a failure that reads like a backup problem.
           scp -P "${{ secrets.DEPLOY_PORT || 22 }}" \
-            deploy/docker-compose.prod.yml deploy/Caddyfile \
+            deploy/docker-compose.prod.yml \
             deploy/deploy.sh deploy/backup.sh deploy/restore.sh \
             deploy/aliquot.env.example \
             "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_DIR || '/opt/aliquot' }}/"

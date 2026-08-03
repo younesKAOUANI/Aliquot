@@ -28,17 +28,18 @@ if [ -z "${ALIQUOT_IMAGE:-}" ]; then
   exit 1
 fi
 
+# The shared network the edge Caddy reaches this stack over. Declared external
+# in the compose file, so its absence would otherwise surface as a compose error
+# three steps from now, after the backup and the migrations have already run.
+if ! docker network inspect edge > /dev/null 2>&1; then
+  echo "error: the 'edge' docker network does not exist. Run 'docker network create edge'." >&2
+  echo "       See the edge/ directory of the portfolio repository." >&2
+  exit 1
+fi
+
 compose() {
   docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
 }
-
-# The bundled MinIO only runs when the deployment is using it. Pointing
-# STORAGE_ENDPOINT at R2 or S3 and leaving BUNDLED_STORAGE unset means the
-# profile stays off and no object store container is started.
-PROFILES=()
-if [ "${BUNDLED_STORAGE:-true}" = "true" ]; then
-  PROFILES+=(--profile bundled-storage)
-fi
 
 echo "==> logging in to ghcr"
 if [ -n "${GHCR_TOKEN:-}" ]; then
@@ -47,7 +48,7 @@ fi
 
 echo "==> pulling ${ALIQUOT_IMAGE}"
 export ALIQUOT_IMAGE
-compose "${PROFILES[@]}" pull --quiet postgres caddy || true
+compose pull --quiet postgres || true
 docker pull "$ALIQUOT_IMAGE"
 
 # Record what is running now, so a failed deploy can be reversed without
@@ -65,23 +66,23 @@ bash "${DEPLOY_DIR}/backup.sh" || {
 }
 
 echo "==> bringing up dependencies"
-compose "${PROFILES[@]}" up -d postgres
-if [ "${BUNDLED_STORAGE:-true}" = "true" ]; then
-  compose "${PROFILES[@]}" up -d minio
-fi
+compose up -d postgres
 
 echo "==> applying migrations"
-if ! compose "${PROFILES[@]}" run --rm migrate; then
+if ! compose run --rm migrate; then
   echo "error: migrations failed; nothing has been switched over" >&2
   exit 1
 fi
 
 echo "==> rolling the application"
-compose "${PROFILES[@]}" up -d --remove-orphans api worker caddy
+# --remove-orphans is what retires the caddy and minio containers from the
+# topology this deployment used to have. It is scoped to the `aliquot` compose
+# project, so it cannot touch the other two stacks on the box.
+compose up -d --remove-orphans api worker
 
 echo "==> waiting for readiness"
 for _ in $(seq 1 40); do
-  if compose "${PROFILES[@]}" exec -T api node -e \
+  if compose exec -T api node -e \
       "fetch('http://localhost:3000/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" 2>/dev/null; then
     echo "==> ready"
     break
@@ -89,19 +90,26 @@ for _ in $(seq 1 40); do
   sleep 3
 done
 
-if ! compose "${PROFILES[@]}" exec -T api node -e \
+if ! compose exec -T api node -e \
     "fetch('http://localhost:3000/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" 2>/dev/null; then
   echo "error: the api did not become ready. Recent logs:" >&2
-  compose "${PROFILES[@]}" logs --tail 60 api >&2
+  compose logs --tail 60 api >&2
   echo >&2
   echo "roll back with: ALIQUOT_IMAGE=${PREVIOUS} bash ${DEPLOY_DIR}/deploy.sh" >&2
   exit 1
 fi
 
-echo "==> pruning images older than a week"
-# Keeps the last few releases available for a rollback while stopping the disk
-# filling with every image ever deployed.
-docker image prune -af --filter 'until=168h' > /dev/null || true
+echo "==> pruning old images"
+# Scoped to this project by reference, and deliberately not `docker image prune
+# -a`: that is daemon-wide, and this box also runs the portfolio and the triage
+# engine, whose previous releases are exactly their rollback targets.
+#
+# `image ls` lists newest first, so this keeps the three most recent and drops
+# the rest. The one currently running is among them; rmi refuses to remove an
+# image in use anyway, which is the backstop rather than the mechanism.
+docker image ls --filter 'reference=ghcr.io/youneskaouani/aliquot' --format '{{.ID}}' \
+  | awk '!seen[$0]++' | tail -n +4 | xargs -r docker rmi > /dev/null 2>&1 || true
+docker image prune -f > /dev/null || true
 
 echo "==> deployed ${ALIQUOT_IMAGE}"
-compose "${PROFILES[@]}" ps
+compose ps

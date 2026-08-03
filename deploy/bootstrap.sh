@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 #
-# One-time VPS preparation, run as root on a fresh Debian or Ubuntu box:
+# One-time VPS preparation, run as root on a FRESH Debian or Ubuntu box:
 #
-#   curl -fsSL https://raw.githubusercontent.com/younesKAOUANI/Aliquot/main/deploy/bootstrap.sh | bash
+#   DEPLOY_USER=deploy bash bootstrap.sh
 #
-# or, preferably, read it first and then run it. It is short on purpose.
+# Read it first. It is short on purpose.
 #
-# What it does NOT do: install secrets, or start anything. It prepares the host
-# and stops, because the next step needs decisions a script should not make for
-# you.
+# This box is shared: it also serves the portfolio and the triage engine. This
+# script prepares the host for all three, so run it FIRST and ONCE. It resets
+# the firewall wholesale, which on an already-serving machine takes three sites
+# down for as long as it takes to notice. The guard below refuses to run when
+# containers are already present; override it only if you know why.
+#
+# What it does NOT do: install secrets, create the `edge` docker network, or
+# start anything. It prepares the host and stops, because the next step needs
+# decisions a script should not make for you.
 
 set -euo pipefail
 
@@ -19,6 +25,17 @@ BACKUP_DIR="${BACKUP_DIR:-/var/backups/aliquot}"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "run as root" >&2
+  exit 1
+fi
+
+# `ufw --force reset` below is not survivable by a live host. If anything is
+# already running here, this is a re-run against a serving box rather than the
+# first-boot it is written for.
+if [ "${FORCE:-}" != "1" ] && command -v docker > /dev/null \
+  && [ -n "$(docker ps -q 2> /dev/null)" ]; then
+  echo "refusing to run: containers are already running on this host." >&2
+  echo "This script resets the firewall and is meant for a fresh box." >&2
+  echo "If you are certain, re-run with FORCE=1." >&2
   exit 1
 fi
 
@@ -56,9 +73,9 @@ install -d -o root -g "$DEPLOY_USER" -m 0750 "$ENV_DIR"
 install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0700 "$BACKUP_DIR"
 
 echo "==> firewall"
-# Everything except SSH and TLS stays shut. Postgres and MinIO publish no host
-# port in the production compose file, so this is belt to that braces: a
-# mistakenly published port still does not reach the internet.
+# Everything except SSH and TLS stays shut. None of the three stacks publishes a
+# host port other than the edge Caddy's 80/443, so this is belt to that braces:
+# a mistakenly published port still does not reach the internet.
 ufw --force reset > /dev/null
 ufw default deny incoming
 ufw default allow outgoing
@@ -92,9 +109,14 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CRON
 chmod 0644 /etc/cron.d/aliquot-backup
 
+echo "==> shared docker network"
+# The edge Caddy and all three application stacks meet here. Created now so no
+# stack has to own it, and none is a startup dependency of the others.
+docker network inspect edge > /dev/null 2>&1 || docker network create edge > /dev/null
+
 cat <<DONE
 
-Host prepared. Remaining steps, in order:
+Host prepared, for all three projects on this box. Remaining steps, in order:
 
   1. Add the CI deploy key
        sudo -u ${DEPLOY_USER} mkdir -p /home/${DEPLOY_USER}/.ssh
@@ -112,18 +134,22 @@ Host prepared. Remaining steps, in order:
        openssl rand -hex 32      # AUTH_JWT_SECRET
        openssl rand -base64 24   # POSTGRES_PASSWORD, APP_DB_PASSWORD, storage keys
 
-  3. DNS, before the first deploy — Caddy needs the names to resolve to get
-     certificates, and Let's Encrypt rate-limits failures
-       A  aliquot.youneskaouani.dev          -> $(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || echo '<this host>')
-       A  storage.aliquot.youneskaouani.dev  -> the same address
-     The second record is only needed while BUNDLED_STORAGE=true.
+  3. DNS for all four names, before the edge Caddy first starts — it needs them
+     to resolve to get certificates, and Let's Encrypt rate-limits failures
+       A  youneskaouani.dev                -> $(curl -fsS --max-time 5 https://api.ipify.org 2> /dev/null || echo '<this host>')
+       A  www.youneskaouani.dev            -> the same address
+       A  aliquot.youneskaouani.dev        -> the same address
+       A  triage-engine.youneskaouani.dev  -> the same address
 
   4. Host key for CI. Run locally, then paste into the GitHub environment
-     secret DEPLOY_KNOWN_HOSTS
+     secret DEPLOY_KNOWN_HOSTS — in all three repositories
        ssh-keyscan -t ed25519 <this host>
 
-  5. First deploy, from your laptop
-       gh workflow run deploy.yml
+  5. Bring up the edge, then the three stacks
+       gh workflow run deploy.yml     # in younesKAOUANI/portfolio, ships the edge
+       gh workflow run deploy.yml     # here
+       # and push to main in younesKAOUANI/triage-engine
 
-Full runbook: docs/DEPLOYMENT.md
+Runbooks: docs/DEPLOYMENT.md here, and deploy/edge/README.md in the portfolio
+repository for the host as a whole.
 DONE

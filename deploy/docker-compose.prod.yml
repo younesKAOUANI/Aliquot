@@ -1,13 +1,17 @@
-# Production stack for a single VPS.
+# Production stack for a shared VPS.
 #
 # Differences from the development compose file, and the reason for each:
 #
 #   - Images are pulled from GHCR by digest-bearing tag rather than built here.
 #     A server that builds its own images is a server whose running code is not
 #     the code CI tested.
-#   - Nothing publishes a host port except Caddy. Postgres and MinIO are
-#     reachable only on the internal network, so the attack surface is one TLS
-#     listener rather than four open ports.
+#   - Nothing publishes a host port at all. The box runs two other projects and
+#     there is one pair of 80/443 between them, so TLS lives in a shared edge
+#     Caddy that reaches `api` by container name over the external `edge`
+#     network. Postgres is on the project network only and has no route in.
+#   - Object storage is Cloudflare R2 rather than a bundled MinIO. On a host
+#     with two other services, one more stateful container whose volume is not
+#     in the nightly dump is a liability the deployment does not need.
 #   - Every secret comes from the environment. There are no credentials in this
 #     file, which is why -- unlike the development one -- it is safe to read.
 #   - Restart policies and log rotation exist, because an unattended box fills
@@ -16,7 +20,8 @@
 # Deploy with:
 #   docker compose -f deploy/docker-compose.prod.yml --env-file /etc/aliquot/aliquot.env up -d
 #
-# See docs/DEPLOYMENT.md for the full runbook.
+# See docs/DEPLOYMENT.md for the full runbook, and the `edge` directory of the
+# portfolio repository for the host as a whole.
 
 name: aliquot
 
@@ -30,9 +35,10 @@ x-app-env: &app-env
   NODE_ENV: production
   LOG_LEVEL: ${LOG_LEVEL:-info}
   DATABASE_URL: postgres://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
-  # Storage is deliberately fully env-driven. Pointing STORAGE_ENDPOINT at
-  # Cloudflare R2 or S3 instead of the bundled MinIO is a configuration change
-  # and nothing else -- see docs/DEPLOYMENT.md.
+  # Storage is deliberately fully env-driven, and the application only ever
+  # speaks S3. Production points at Cloudflare R2; the development compose file
+  # points the same variables at a local MinIO. Neither the API nor the worker
+  # can tell which it is talking to -- see docs/DEPLOYMENT.md.
   STORAGE_ENDPOINT: ${STORAGE_ENDPOINT}
   STORAGE_REGION: ${STORAGE_REGION:-auto}
   STORAGE_BUCKET: ${STORAGE_BUCKET}
@@ -67,29 +73,6 @@ services:
       timeout: 5s
       retries: 10
       start_period: 15s
-
-  minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
-    restart: unless-stopped
-    logging: *logging
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY_ID}
-      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_ACCESS_KEY}
-      # Presigned URLs are signed for a specific host. The browser and the
-      # worker have to reach the object store under the SAME name or every
-      # signature fails on one side of the fence, so MinIO is told its public
-      # address explicitly and Caddy proxies that hostname to it.
-      MINIO_BROWSER_REDIRECT_URL: https://${STORAGE_DOMAIN}/console
-    volumes:
-      - minio-data:/data
-    healthcheck:
-      test: ['CMD', 'mc', 'ready', 'local']
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 15s
-    profiles: ['bundled-storage']
 
   # One-shot, ordered before the API. Applying migrations from the same image
   # that runs the code means the two cannot drift by a deploy.
@@ -128,7 +111,16 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
-    # Deliberately no `ports`. Caddy is the only thing the internet can reach.
+    # Deliberately no `ports`. The shared edge Caddy is the only thing the
+    # internet can reach, and it finds this container by the alias below --
+    # Compose would otherwise only publish the bare service name `api` onto a
+    # network three projects share, where a second project with a service of the
+    # same name would collide silently.
+    networks:
+      default: {}
+      edge:
+        aliases:
+          - aliquot-api
 
   worker:
     image: ${ALIQUOT_IMAGE:-ghcr.io/youneskaouani/aliquot:latest}
@@ -142,28 +134,6 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    logging: *logging
-    ports:
-      - '80:80'
-      - '443:443'
-      - '443:443/udp'
-    environment:
-      ALIQUOT_DOMAIN: ${ALIQUOT_DOMAIN}
-      STORAGE_DOMAIN: ${STORAGE_DOMAIN}
-      ACME_EMAIL: ${ACME_EMAIL}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # Certificates and the ACME account key. Losing this volume means
-      # re-issuing every certificate, which Let's Encrypt rate-limits.
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      api:
-        condition: service_healthy
 
   # Profiled, so a redeploy never re-runs it by accident. The seed is idempotent
   # and still: `up -d` should not be able to touch data.
@@ -183,8 +153,15 @@ services:
         condition: service_healthy
     profiles: ['seed']
 
+networks:
+  # Postgres and the one-shot jobs live here and nowhere else.
+  default: {}
+  # Shared with the portfolio and the triage engine. Created out of band -- see
+  # the `edge` directory of the portfolio repository -- rather than owned by any
+  # one project, so no stack is a startup dependency of the other two.
+  edge:
+    name: edge
+    external: true
+
 volumes:
   postgres-data:
-  minio-data:
-  caddy-data:
-  caddy-config:
