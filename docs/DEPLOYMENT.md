@@ -100,9 +100,15 @@ Private half into the GitHub environment secret `DEPLOY_SSH_KEY`.
 
 ```bash
 sudo cp /opt/aliquot/aliquot.env.example /etc/aliquot/aliquot.env
-sudo chmod 600 /etc/aliquot/aliquot.env
+sudo chown root:deploy /etc/aliquot/aliquot.env
+sudo chmod 640 /etc/aliquot/aliquot.env
 sudo $EDITOR /etc/aliquot/aliquot.env
 ```
+
+`640 root:deploy`, not `600 root`. `deploy.sh` runs as the deploy user and passes
+this file to `docker compose --env-file`, which reads it as the invoking user —
+at `600` the deploy cannot read its own configuration and every release fails on
+a permissions error that looks like a compose bug.
 
 Generate every secret rather than inventing one:
 

@@ -57,16 +57,34 @@ PREVIOUS=$(docker inspect --format '{{.Config.Image}}' aliquot-api-1 2>/dev/null
 echo "==> current image: ${PREVIOUS}"
 echo "$PREVIOUS" > "${DEPLOY_DIR}/.previous-image"
 
+echo "==> bringing up dependencies"
+# Before the backup, not after. backup.sh dumps through `compose exec postgres`,
+# which needs a running container -- on a first deploy there is none, and the
+# backup would fail for the one reason that is not a problem, taking the whole
+# deploy with it.
+compose up -d postgres
+
+echo "==> waiting for postgres"
+# `up -d` returns once the container is started, not once the server is
+# accepting connections. Dumping in that window fails on a healthy database.
+for _ in $(seq 1 30); do
+  if compose exec -T postgres pg_isready -q; then break; fi
+  sleep 2
+done
+if ! compose exec -T postgres pg_isready -q; then
+  echo "error: postgres did not become ready. Recent logs:" >&2
+  compose logs --tail 40 postgres >&2
+  exit 1
+fi
+
 echo "==> backing up the database before migrating"
 # Migrations are forward-only and transactional per file, so a failure leaves
 # no trace. This is for the case they succeed and the release is still wrong.
+# On a first deploy this dumps an empty database, which is correct and cheap.
 bash "${DEPLOY_DIR}/backup.sh" || {
   echo "error: pre-deploy backup failed; refusing to migrate" >&2
   exit 1
 }
-
-echo "==> bringing up dependencies"
-compose up -d postgres
 
 echo "==> applying migrations"
 if ! compose run --rm migrate; then
