@@ -41,6 +41,9 @@ jobs:
         id: image
         run: |
           set -euo pipefail
+          # Lowercased: a registry reference must be, and `github.repository`
+          # keeps the repository's own casing.
+          repo="${GITHUB_REPOSITORY,,}"
           if [ -n "${{ inputs.image_tag }}" ]; then
             ref="${{ inputs.image_tag }}"
           else
@@ -49,8 +52,8 @@ jobs:
             # the pull and the next restart.
             ref="sha-${{ github.event.workflow_run.head_sha || github.sha }}"
           fi
-          echo "image=ghcr.io/${{ github.repository }}:${ref}" >> "$GITHUB_OUTPUT"
-          echo "Deploying ghcr.io/${{ github.repository }}:${ref}"
+          echo "image=ghcr.io/${repo}:${ref}" >> "$GITHUB_OUTPUT"
+          echo "Deploying ghcr.io/${repo}:${ref}"
 
       - name: open an ssh session to the host
         run: |
@@ -66,9 +69,18 @@ jobs:
       - name: sync the deployment files
         run: |
           set -euo pipefail
+          # backup.sh in particular: deploy.sh calls it before migrating and
+          # aborts if it fails, so shipping the deploy script without it turns
+          # every release into a failure that reads like a backup problem.
           scp -P "${{ secrets.DEPLOY_PORT || 22 }}" \
-            deploy/docker-compose.prod.yml deploy/Caddyfile deploy/deploy.sh \
+            deploy/docker-compose.prod.yml deploy/Caddyfile \
+            deploy/deploy.sh deploy/backup.sh deploy/restore.sh \
+            deploy/aliquot.env.example \
             "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_DIR || '/opt/aliquot' }}/"
+
+          ssh -p "${{ secrets.DEPLOY_PORT || 22 }}" \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "chmod +x ${{ secrets.DEPLOY_DIR || '/opt/aliquot' }}/*.sh"
 
       - name: deploy
         run: |

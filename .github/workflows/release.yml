@@ -35,6 +35,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # A registry reference must be lowercase and `github.repository` preserves
+      # the repository's own casing. docker/metadata-action folds it silently
+      # when it builds tags, so the mismatch only surfaces where the name is
+      # used raw -- which is every step below.
+      - id: name
+        run: echo "image=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -46,7 +53,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          images: ${{ env.REGISTRY }}/${{ steps.name.outputs.image }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -75,14 +82,14 @@ jobs:
 
       - uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          subject-name: ${{ env.REGISTRY }}/${{ steps.name.outputs.image }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
       - name: the published image actually runs
         run: |
           set -euo pipefail
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE }}@${{ steps.build.outputs.digest }}"
+          IMAGE="${{ env.REGISTRY }}/${{ steps.name.outputs.image }}@${{ steps.build.outputs.digest }}"
 
           # A smoke test that fails for the right reason. With no DATABASE_URL
           # the config parser must reject the boot and name the variable; if it
@@ -107,7 +114,7 @@ jobs:
             echo "### Image published"
             echo
             echo '```'
-            echo "${{ env.REGISTRY }}/${{ env.IMAGE }}@${{ steps.build.outputs.digest }}"
+            echo "${{ env.REGISTRY }}/${{ steps.name.outputs.image }}@${{ steps.build.outputs.digest }}"
             echo '```'
             echo
             echo "Tags:"
