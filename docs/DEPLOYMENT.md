@@ -113,9 +113,17 @@ a permissions error that looks like a compose bug.
 Generate every secret rather than inventing one:
 
 ```bash
-openssl rand -hex 32      # AUTH_JWT_SECRET
-openssl rand -base64 24   # POSTGRES_PASSWORD, APP_DB_PASSWORD, storage keys
+openssl rand -hex 32      # AUTH_JWT_SECRET, POSTGRES_PASSWORD, APP_DB_PASSWORD
 ```
+
+**Hex, not base64, for the database passwords.** Both are interpolated into a
+connection URL — `postgres://user:password@host/db` — and base64's alphabet
+includes `/`, which ends the userinfo section. The driver then fails with
+`TypeError: Invalid URL` from inside connection setup, naming neither the
+password nor the variable that holds it. About a third of `openssl rand -base64`
+outputs contain one, so it fails randomly rather than consistently, which is
+worse. `scripts/migrate.ts` now refuses a URL-unsafe `APP_DB_PASSWORD` outright
+rather than letting it reach the API.
 
 ### 4. GitHub environment
 

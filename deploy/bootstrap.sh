@@ -128,11 +128,12 @@ Host prepared, for all three projects on this box. Remaining steps, in order:
 
   2. Secrets
        sudo cp ${DEPLOY_DIR}/aliquot.env.example ${ENV_DIR}/aliquot.env
-       sudo chmod 600 ${ENV_DIR}/aliquot.env
+       sudo chown root:${DEPLOY_USER} ${ENV_DIR}/aliquot.env
+       sudo chmod 640 ${ENV_DIR}/aliquot.env
        sudo \$EDITOR ${ENV_DIR}/aliquot.env
-     Generate, do not invent:
-       openssl rand -hex 32      # AUTH_JWT_SECRET
-       openssl rand -base64 24   # POSTGRES_PASSWORD, APP_DB_PASSWORD, storage keys
+     Generate, do not invent — hex, so the database passwords stay safe inside
+     the connection URL they are interpolated into:
+       openssl rand -hex 32      # AUTH_JWT_SECRET, POSTGRES_PASSWORD, APP_DB_PASSWORD
 
   3. DNS for all four names, before the edge Caddy first starts — it needs them
      to resolve to get certificates, and Let's Encrypt rate-limits failures

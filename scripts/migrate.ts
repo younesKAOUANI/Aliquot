@@ -147,6 +147,8 @@ async function bootstrapLoginRole(
     throw new Error(`invalid login role name: ${username}`);
   }
 
+  assertUrlSafePassword(password);
+
   // CREATE ROLE is utility SQL: it does not accept bind parameters, so the
   // password has to be inlined as a literal. Escaping it by hand is exactly the
   // kind of thing that goes wrong quietly, so it is done in one place, and the
@@ -175,6 +177,37 @@ async function bootstrapLoginRole(
 
 function quote(identifier: string): string {
   return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+/**
+ * The login password is written into a SQL literal here, but it is ALSO
+ * interpolated into `DATABASE_URL` as `postgres://user:password@host/db` by the
+ * deployment. That second use is the constraint: in a URL, the userinfo section
+ * ends at the first `/`, so a password containing one silently truncates the
+ * authority and the driver reports `TypeError: Invalid URL` from deep inside
+ * connection setup, naming neither the password nor the variable.
+ *
+ * This bit: `openssl rand -base64 24` was the documented way to generate it, and
+ * base64's alphabet includes `+`, `/` and `=`. Roughly a third of generated
+ * passwords broke the deployment, and which third was luck -- the migration
+ * would succeed and the API would crash-loop minutes later.
+ *
+ * Rejected rather than URL-encoded, for the same reason backslashes are rejected
+ * above: a value that is silently transformed between where it is set and where
+ * it is used produces an authentication failure nobody can explain. Hex is the
+ * documented generator now, and this is the guard that makes that not merely
+ * advice.
+ */
+function assertUrlSafePassword(password: string): void {
+  const offending = [...new Set(password.match(/[^A-Za-z0-9._~-]/g) ?? [])];
+  if (offending.length > 0) {
+    throw new Error(
+      `APP_DB_PASSWORD contains characters that are unsafe inside a URL: ${offending.join(' ')}\n` +
+        'It is interpolated into DATABASE_URL as postgres://user:password@host/db, where\n' +
+        "a '/' ends the authority section and the driver fails with 'Invalid URL'.\n" +
+        'Generate one with: openssl rand -hex 32',
+    );
+  }
 }
 
 /**
