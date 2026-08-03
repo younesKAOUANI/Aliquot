@@ -37,7 +37,25 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Until the host exists this workflow would fail on every release, and a
+      # job that is always red is a job nobody reads -- so the first real
+      # deployment failure would look exactly like the eleven before it. Skip
+      # cleanly instead, and say why.
+      - name: is there anywhere to deploy to
+        id: preflight
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_HOST}" ]; then
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+            echo '::notice::DEPLOY_HOST is not set in the production environment; nothing to deploy to yet. See docs/DEPLOYMENT.md.'
+          else
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: resolve the image reference
+        if: steps.preflight.outputs.configured == 'true'
         id: image
         run: |
           set -euo pipefail
@@ -56,6 +74,7 @@ jobs:
           echo "Deploying ghcr.io/${repo}:${ref}"
 
       - name: open an ssh session to the host
+        if: steps.preflight.outputs.configured == 'true'
         run: |
           set -euo pipefail
           install -d -m 700 ~/.ssh
@@ -67,6 +86,7 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
 
       - name: sync the deployment files
+        if: steps.preflight.outputs.configured == 'true'
         run: |
           set -euo pipefail
           # backup.sh in particular: deploy.sh calls it before migrating and
@@ -83,6 +103,7 @@ jobs:
             "chmod +x ${{ secrets.DEPLOY_DIR || '/opt/aliquot' }}/*.sh"
 
       - name: deploy
+        if: steps.preflight.outputs.configured == 'true'
         run: |
           set -euo pipefail
           ssh -p "${{ secrets.DEPLOY_PORT || 22 }}" \
@@ -93,6 +114,7 @@ jobs:
              bash ${{ secrets.DEPLOY_DIR || '/opt/aliquot' }}/deploy.sh"
 
       - name: verify the deployment from outside
+        if: steps.preflight.outputs.configured == 'true'
         run: |
           set -euo pipefail
           # From the internet, over TLS, against the real hostname -- not a
@@ -131,6 +153,15 @@ jobs:
       - name: summary
         if: always()
         run: |
+          if [ "${{ steps.preflight.outputs.configured }}" != 'true' ]; then
+            {
+              echo "### Not deployed"
+              echo
+              echo "No \`DEPLOY_HOST\` in the \`production\` environment."
+              echo "Setup: [docs/DEPLOYMENT.md](../blob/main/docs/DEPLOYMENT.md)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           {
             echo "### Deployed"
             echo

@@ -120,6 +120,11 @@ a decision rather than a side effect of merging, then add:
 `DEPLOY_KNOWN_HOSTS` is pinned rather than scanned at deploy time. Trusting
 whatever answers on the night is not host verification.
 
+Until `DEPLOY_HOST` is set the deploy workflow **skips cleanly** and says so in
+its summary, rather than failing on every release. A job that is always red is a
+job nobody reads, and the first real deployment failure would then look exactly
+like the eleven before it.
+
 ### 5. First deploy
 
 ```bash
