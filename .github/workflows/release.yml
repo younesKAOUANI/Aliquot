@@ -91,22 +91,45 @@ jobs:
           set -euo pipefail
           IMAGE="${{ env.REGISTRY }}/${{ steps.name.outputs.image }}@${{ steps.build.outputs.digest }}"
 
+          # Every command whose output is asserted on is captured with
+          # `|| true` first, then matched against a here-string.
+          #
+          # The previous shape, `docker run ... | grep -q ...`, failed for a
+          # reason that had nothing to do with the assertion: these containers
+          # are *expected* to exit non-zero -- refusing to boot without
+          # configuration is the behaviour being tested -- and under `pipefail`
+          # a non-zero exit anywhere in the pipeline fails the step even when
+          # grep matched. The assertion was passing and the step was red.
+          assert() {
+            local label="$1" haystack="$2" needle="$3"
+            if grep -q -- "$needle" <<< "$haystack"; then
+              echo "ok    ${label}"
+            else
+              echo "::error::${label}: expected to find '${needle}'"
+              echo "$haystack"
+              exit 1
+            fi
+          }
+
           # A smoke test that fails for the right reason. With no DATABASE_URL
           # the config parser must reject the boot and name the variable; if it
-          # instead crashed on a missing module or a bad entrypoint, the message
-          # would be different and this catches that.
-          output=$(docker run --rm "$IMAGE" node dist/src/main.js 2>&1 || true)
-          echo "$output"
-          echo "$output" | grep -q 'DATABASE_URL'
+          # instead crashed on a missing module or a bad entrypoint the message
+          # would be different, and this catches that.
+          boot=$(docker run --rm "$IMAGE" node dist/src/main.js 2>&1 || true)
+          assert 'refuses to boot naming DATABASE_URL' "$boot" 'DATABASE_URL'
 
-          # The migration runner and the scripts are in the image and loadable.
-          docker run --rm "$IMAGE" node -e "require('/app/dist/scripts/migrate.js')" 2>&1 | grep -q 'DATABASE_ADMIN_URL'
+          migrate=$(docker run --rm "$IMAGE" node -e "require('/app/dist/scripts/migrate.js')" 2>&1 || true)
+          assert 'migration runner is present and loadable' "$migrate" 'DATABASE_ADMIN_URL'
 
-          # The viewer shipped with it.
+          # The viewer and the migrations shipped, where the compiled code looks
+          # for them rather than where the source tree keeps them.
           docker run --rm --entrypoint sh "$IMAGE" -c 'test -f /app/dist/src/viewer/public/index.html'
+          echo 'ok    viewer shipped'
+          docker run --rm --entrypoint sh "$IMAGE" -c 'test -f /app/dist/migrations/0001_foundation.sql'
+          echo 'ok    migrations shipped'
 
-          # Migrations shipped where the compiled runner looks for them.
-          docker run --rm --entrypoint sh "$IMAGE" -c 'ls /app/dist/migrations/0001_foundation.sql'
+          user=$(docker run --rm --entrypoint sh "$IMAGE" -c 'id -un')
+          assert 'runs as an unprivileged user' "$user" 'node'
 
       - name: summary
         run: |
