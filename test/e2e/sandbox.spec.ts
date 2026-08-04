@@ -146,6 +146,15 @@ test.describe('the sandbox', () => {
   });
 
   test('the sandbox credential is separate from the signed-in session', async ({ page }) => {
+    // Needs a second way in to hold two credentials at once. The public
+    // deployment has the demo sign-in instead, which this would have to drive
+    // differently; the property is the same either way and is worth asserting
+    // once rather than twice.
+    test.skip(
+      process.env.ALIQUOT_E2E_DEV_SIGNIN !== 'true',
+      'needs the development sign-in to hold a second session',
+    );
+
     // Both can be held at once, and the tab must not overwrite the session the
     // rest of the page is using -- a visitor who signs in to read the seeded
     // data and then starts a sandbox would otherwise lose the first.

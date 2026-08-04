@@ -263,10 +263,65 @@ STORAGE_REGION=auto
 S3 API, not the public bucket URL. Scope the token to Object Read & Write on
 this bucket alone.
 
-**Set the bucket's CORS policy** to allow `PUT` and `GET` from
-`https://aliquot.youneskaouani.dev`. Miss it and browser uploads fail with an
-opaque network error while `curl` against the very same presigned URL succeeds,
-which is a genuinely nasty hour.
+### Bucket CORS
+
+The sandbox tab uploads from the visitor's browser straight to R2, so the bucket
+has to be told about this origin. R2 → the bucket → Settings → CORS policy:
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://aliquot.youneskaouani.dev"],
+    "AllowedMethods": ["PUT", "GET", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+`ExposeHeaders` is the line that gets left out, and leaving it out produces the
+worst failure of the three. The PUT succeeds; the browser simply cannot read the
+`ETag` off a cross-origin response unless the policy names it, so completion has
+no entity tag to quote and fails one step after the actual cause. The viewer
+detects exactly this case and says so, which is the only reason it is not an
+afternoon.
+
+Missing `AllowedOrigins` or `PUT` fails earlier and more bluntly: the preflight
+is refused, `fetch` rejects with a bare `TypeError`, and there is no status
+anywhere to look at. `curl` cannot reproduce any of it — it sends no `Origin`
+and enforces nothing — so this is the one class of problem that only a browser
+can find.
+
+Verify from the deployed page rather than by reading the policy back:
+
+```bash
+ALIQUOT_E2E_BASE_URL=https://aliquot.youneskaouani.dev npm run test:e2e -- sandbox
+```
+
+### Enabling the sandbox on a box provisioned before it existed
+
+`SANDBOX_MODE` is off unless the environment file says otherwise, and a box set
+up from an earlier copy of `aliquot.env.example` has no sandbox block at all.
+The symptom is `POST /v1/sandbox` answering **404** — absent rather than
+forbidden, by design, so the response is the same whether the feature does not
+exist or is merely switched off.
+
+Append the `Ephemeral sandbox tenants` section of
+[`deploy/aliquot.env.example`](../deploy/aliquot.env.example) to
+`/etc/aliquot/aliquot.env` and restart. The values there are the intended
+production ones; nothing in the block is a placeholder:
+
+```bash
+sudo -e /etc/aliquot/aliquot.env          # paste the block
+cd /opt/aliquot && ./deploy.sh            # or: docker compose ... up -d api worker
+curl -s -X POST https://aliquot.youneskaouani.dev/v1/sandbox | head -c 200
+```
+
+A 200 carrying `"auditSeq": "1"` means it is on and the tenant it just created
+is starting its own audit chain from genesis. The worker needs restarting too:
+`SandboxReaper` lives there, and without it the tenants the API hands out are
+never collected.
 
 ### Why not a bundled object store
 
