@@ -511,6 +511,44 @@ table executes with its owner's privileges unless declared
 the wrong role. `scripts/lint-migrations.ts` fails CI on a view declared without
 it, and on any table carrying `tenant_id` without a forced policy.
 
+### 8.1 Ephemeral tenants, and the one thing that deletes
+
+`tenant.kind` is `'permanent'` or `'sandbox'`, and it exists to say which tenants
+are part of the enduring record. Everything else in this schema is built on the
+premise that nothing is removed; a sandbox tenant is explicitly outside that
+premise — synthetic bytes a visitor invented, in a tenant carrying an expiry
+fixed before the first one was written. `kind` is `NOT NULL` with a `permanent`
+default, so every tenant that already existed and every tenant created by a code
+path that has never heard of sandboxes is permanent, and a `CHECK` makes
+`kind = 'sandbox'` and `expires_at IS NOT NULL` biconditional: a sandbox that is
+never reaped and a customer with a countdown are both unrepresentable.
+
+**One privileged deleter.** `SandboxReaper` runs in the worker process and is the
+only code path in this service that removes anything. It does not delete
+directly: it calls `aliquot.reap_sandbox_tenant()`, which reads the tenant's kind
+under `FOR UPDATE` and raises before touching a row if it is not a sandbox. The
+function takes a tenant id and nothing else — no predicate a caller can get
+subtly wrong, no partial mode — so its `WHERE` clause could be deleted entirely
+without it becoming able to delete a customer. Execute is granted to
+`aliquot_worker` alone. The immutability triggers of §5 are relaxed for exactly
+this case, per row: they permit a `DELETE` whose tenant is a sandbox and refuse
+everything else, and neither application role holds `DELETE` on `audit_event`
+regardless.
+
+**Shared objects are the subtle part.** Storage keys derive from the digest alone
+(`sha256/aa/bb/<digest>`) and are therefore global, while `artifact` rows are per
+tenant. Two tenants holding identical bytes hold two rows and one object, so
+deleting a sandbox's objects by walking its own artifact rows would delete bytes a
+permanent tenant still points at — and that tenant's run would go on reporting
+itself `VERIFIED`, with a manifest that still digests correctly, while the
+download 404s. `aliquot.digests_referenced_elsewhere()` answers the cross-tenant
+question first, and is called *after* the rows are gone, so that "referenced by
+another tenant" and "referenced at all" are the same question and a concurrent
+upload of the same content is spared. Rows are deleted before objects for the same
+reason: the surviving failure leaves unreferenced bytes in a bucket, which costs
+storage and tells no lies.
+([ADR-0021](adr/0021-an-ephemeral-write-sandbox-for-the-public-demo.md))
+
 ---
 
 ## 9. Failure modes

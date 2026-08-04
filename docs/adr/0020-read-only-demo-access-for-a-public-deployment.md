@@ -1,8 +1,12 @@
 # ADR-0020: Read-only demo access as a separate mechanism, not a relaxed development one
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-0021](0021-an-ephemeral-write-sandbox-for-the-public-demo.md))
 **Date:** 2026-08-02
 **Deciders:** Younes Kaouani
+
+Amended, not superseded: everything below still holds and read-only demo access is still the
+default way in. ADR-0021 adds a second mechanism beside it, because a session that can change
+nothing cannot demonstrate what this service does when bytes disagree with their declaration.
 
 ## Context
 
