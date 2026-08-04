@@ -57,6 +57,7 @@ import type { CompletedPart } from './object-store';
 @Injectable()
 export class S3ObjectStore extends ObjectStore implements OnModuleInit, OnModuleDestroy {
   private readonly client: S3Client;
+  private readonly signer: S3Client;
   private readonly bucket: string;
   private readonly presignTtlSeconds: number;
 
@@ -67,15 +68,37 @@ export class S3ObjectStore extends ObjectStore implements OnModuleInit, OnModule
     super();
     this.bucket = config.storage.bucket;
     this.presignTtlSeconds = config.storage.presignTtlSeconds;
+
+    const credentials = {
+      accessKeyId: config.storage.accessKeyId,
+      secretAccessKey: config.storage.secretAccessKey,
+    };
+
     this.client = new S3Client({
       region: config.storage.region,
       endpoint: config.storage.endpoint,
       forcePathStyle: config.storage.forcePathStyle,
-      credentials: {
-        accessKeyId: config.storage.accessKeyId,
-        secretAccessKey: config.storage.secretAccessKey,
-      },
+      credentials,
     });
+
+    // A second client that exists only to sign. SigV4 covers the Host header, so
+    // a presigned URL is valid at exactly one host, and that host has to be the
+    // one the *client* can reach -- which is not always the one this process
+    // talks to. Rewriting the origin of an already-signed URL is not an option:
+    // it invalidates the signature it is rewriting.
+    //
+    // The same instance unless STORAGE_PUBLIC_ENDPOINT is set, which is the
+    // ordinary case: sharing it then costs nothing and keeps one connection
+    // pool rather than two.
+    this.signer =
+      config.storage.publicEndpoint === config.storage.endpoint
+        ? this.client
+        : new S3Client({
+            region: config.storage.region,
+            endpoint: config.storage.publicEndpoint,
+            forcePathStyle: config.storage.forcePathStyle,
+            credentials,
+          });
   }
 
   /**
@@ -102,6 +125,10 @@ export class S3ObjectStore extends ObjectStore implements OnModuleInit, OnModule
 
   onModuleDestroy(): void {
     this.client.destroy();
+    // Guarded rather than unconditional: the two are the same object whenever
+    // no public endpoint is configured, and destroying a destroyed client is
+    // not something the SDK promises to tolerate.
+    if (this.signer !== this.client) this.signer.destroy();
   }
 
   async ensureBucket(): Promise<void> {
@@ -158,7 +185,7 @@ export class S3ObjectStore extends ObjectStore implements OnModuleInit, OnModule
 
   async presignUploadPart(key: string, uploadId: string, partNumber: number): Promise<string> {
     return getSignedUrl(
-      this.client,
+      this.signer,
       new UploadPartCommand({
         Bucket: this.bucket,
         Key: key,
@@ -212,7 +239,7 @@ export class S3ObjectStore extends ObjectStore implements OnModuleInit, OnModule
 
   async presignGet(key: string, downloadFilename?: string): Promise<string> {
     return getSignedUrl(
-      this.client,
+      this.signer,
       new GetObjectCommand({
         Bucket: this.bucket,
         Key: key,

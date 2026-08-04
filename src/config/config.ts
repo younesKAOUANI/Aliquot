@@ -21,6 +21,25 @@ const schema = z.object({
   DATABASE_LOG_QUERIES: z.stringbool().default(false),
 
   STORAGE_ENDPOINT: z.string().url(),
+  /**
+   * The endpoint presigned URLs are signed *for*, when that is not the endpoint
+   * this process talks to.
+   *
+   * SigV4 signs the Host header, so a presigned URL is valid at exactly one
+   * host. Usually that is fine, because the client and the service reach the
+   * store by the same name. On a `docker compose up` they do not: the API
+   * resolves `http://minio:9000` on the compose network and a browser on the
+   * host cannot resolve that name at all, so an upload from the viewer fails
+   * with a bare TypeError and no status. Setting this to `http://localhost:9000`
+   * makes the signature valid where the client actually is, while the service
+   * keeps using the internal name for the calls it makes itself.
+   *
+   * Unset in production, and it should stay that way: R2 and S3 publish one
+   * endpoint that resolves identically from everywhere, and a second name is a
+   * second thing to get wrong. This exists so the local stack tells the truth,
+   * not because the deployment needs it.
+   */
+  STORAGE_PUBLIC_ENDPOINT: z.string().url().optional(),
   STORAGE_REGION: z.string().default('us-east-1'),
   STORAGE_BUCKET: z.string().min(3),
   STORAGE_ACCESS_KEY_ID: z.string().min(1),
@@ -149,6 +168,8 @@ export class AppConfig {
 
   readonly storage: {
     endpoint: string;
+    /** Where presigned URLs point, which is `endpoint` unless overridden. */
+    publicEndpoint: string;
     region: string;
     bucket: string;
     accessKeyId: string;
@@ -218,6 +239,7 @@ export class AppConfig {
 
     this.storage = {
       endpoint: env.STORAGE_ENDPOINT,
+      publicEndpoint: env.STORAGE_PUBLIC_ENDPOINT ?? env.STORAGE_ENDPOINT,
       region: env.STORAGE_REGION,
       bucket: env.STORAGE_BUCKET,
       accessKeyId: env.STORAGE_ACCESS_KEY_ID,
