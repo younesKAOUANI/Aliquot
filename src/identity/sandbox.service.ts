@@ -250,10 +250,6 @@ export class SandboxService {
           tenant_id: tenant.id,
           study_id: studyId,
           user_id: operatorId,
-          // Operator, not admin. The sandbox exists to exercise the ingestion
-          // lifecycle, and an operator is the principal that actually performs
-          // it; handing out admin would make the sandbox a demonstration of a
-          // role nobody uses to acquire data.
           // Admin, not operator, and it is theirs to hold: this tenant exists for
           // one visitor and dies with them. Operator can register runs but not
           // verify a chain -- `POST /v1/audit/verify` requires steward or admin

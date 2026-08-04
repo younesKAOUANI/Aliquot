@@ -43,7 +43,7 @@ a revoked membership keeps its row so that "who could have written this, and whe
 stop being true" stays answerable years later. Anything that lets a stranger write must
 also answer what happens to what they wrote. If it stays, the deployment accumulates other
 people's junk for ever and a reviewer's first screen is a list of runs called `test`. If it
-goes, something has to delete it, and nine migrations have been spent making deletion
+goes, something has to delete it, and seven migrations have been spent making deletion
 impossible.
 
 ## Decision
@@ -71,11 +71,10 @@ anything, to act on a tenant whose `kind` is not `sandbox`.
 
 **Pros:** The demonstration becomes first-hand. The visitor declares a manifest, uploads
 bytes they chose, flips one of them, and watches the service refuse the artifact and
-quarantine the run — with both digests named. The session is an ordinary operator session
-with no `demo` claim, so every role check, every RLS policy and every state-machine
-transition applies to it exactly as to a paying tenant; a sandbox that reached the
-interesting paths by relaxing a guard would demonstrate that the guards are negotiable
-rather than that the system works. It also showcases tenant isolation instead of straining
+quarantine the run — with both digests named. The session is an ordinary one with no `demo`
+claim, so every role check, every RLS policy and every state-machine transition applies to
+it exactly as to a paying tenant; a sandbox that reached the interesting paths by relaxing
+a guard would demonstrate that the guards are negotiable rather than that the system works. It also showcases tenant isolation instead of straining
 it: the visitor's tenant is empty except for what they put in it, which is the guarantee
 made tangible rather than described. And `tenant.kind` gives the schema a word for "outside
 the enduring record", which is a distinction it needed and did not have.
@@ -310,12 +309,17 @@ capability at all.
 6. - [x] The three immutability triggers relaxed per row for sandbox tenants only, rather
    than by `session_replication_role = 'replica'`, which would also disable the foreign key
    checks the delete order depends on.
-7. - [x] `SANDBOX_MODE` and six `SANDBOX_*` values in `src/config/config.ts`, permitted in
+7. - [x] `SANDBOX_MODE` and seven `SANDBOX_*` values in `src/config/config.ts`, permitted in
    production, with a boot refusal when the per-artifact cap exceeds the tenant cap.
 8. - [x] `POST /v1/sandbox` taking no request body, 404 when disabled, rate limited on its
    own budget; `GET /v1/sandbox` reporting quota and usage.
-9. - [x] An ordinary operator session with no `demo` claim, so `DemoReadOnlyGuard` does not
-   apply and every role check runs as it does for a paying tenant.
+9. - [x] An ordinary session with no `demo` claim — admin of the sandbox tenant and nothing
+   else — so `DemoReadOnlyGuard` does not apply and every role check runs as it does for a
+   paying tenant. Admin rather than operator because `POST /v1/audit/verify` requires
+   steward or above, and a visitor who can watch their own chain grow but not ask whether
+   it is intact has been stopped one step short of the point. The privilege is bounded by
+   the tenant, not by the role; `SANDBOX_MAX_WRITES` is what stops `admin` meaning
+   "create ten thousand instruments".
 10. - [x] `SandboxQuotaGuard` bound as an `APP_GUARD` after `AuthGuard` and
     `DemoReadOnlyGuard`, exempting safe methods and permanent tenants.
 11. - [x] Per-artifact size refused at registration in

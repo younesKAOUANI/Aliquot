@@ -5,10 +5,10 @@ service makes. Each one states what to do, what you should see, and *why it is
 the interesting part* — because "the page loaded" is not evidence of anything.
 
 The first one is the one to do if you only do one: it hands you a tenant of your
-own and lets you break something in it. It needs a terminal. The other ten are
-clicks against the seeded dataset at <https://aliquot.youneskaouani.dev>, signed
-in with **Try the demo**: no account, read-only, pre-seeded. To run it all
-locally instead:
+own and lets you break something in it. It is written out as `curl` so that every
+request is visible. The other ten are clicks against the seeded dataset at
+<https://aliquot.youneskaouani.dev>, signed in with **Try the demo**: no account,
+read-only, pre-seeded. To run it all locally instead:
 
 ```bash
 docker compose up            # then http://localhost:3000
@@ -22,8 +22,9 @@ export A=https://aliquot.youneskaouani.dev
 export TOKEN=$(curl -s -X POST $A/v1/auth/demo | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
 ```
 
-Identifiers below are from the seeded dataset. If yours differ, the seed has
-been re-run; the shapes are the same.
+Identifiers in scenarios 2 onwards are from the seeded dataset. If yours differ,
+the seed has been re-run; the shapes are the same. Scenario 1 creates its own,
+and needs `SANDBOX_MODE=true` if you are running locally.
 
 ---
 
@@ -56,17 +57,19 @@ export INSTRUMENT=$(echo "$S" | field '["sandbox"]["instrumentId"]')
 echo "$S" | field '["sandbox"]["expiresAt"]'      # when it stops existing
 ```
 
-**Expect:** a tenant slug like `sandbox-3f9a1c04`, an `expiresAt` about an hour
-out, a quota, and `auditSeq: "1"`.
+**Expect:** a tenant slug like `sandbox-b022917f`, an `expiresAt` about an hour
+out, a quota of five runs and 32 MiB, and `auditSeq: "1"`.
 
 **Why it matters.** That `"1"` is not decoration. The tenant did not exist when
 the request arrived, so its audit chain starts at the provisioning event and you
 are watching it from genesis — the one thing the seeded demo structurally cannot
 show, because its chain was sixty-five events long before you got here. The
-session you were handed is an *ordinary* operator session, not a demo one: every
-role check, every row-level security policy and every state transition applies to
-it exactly as to a paying tenant. A sandbox that reached the interesting paths by
-relaxing a guard would prove the guards are negotiable, not that the system works.
+session you were handed is an *ordinary* one, not a demo one: admin of that
+tenant, and every role check, every row-level security policy and every state
+transition applies to it exactly as to a paying tenant. What bounds it is the
+tenant — empty, quota-capped and reaped within the hour — rather than the role. A
+sandbox that reached the interesting paths by relaxing a guard would prove the
+guards are negotiable, not that the system works.
 
 ### 1.2 Corrupt one byte and watch it get caught
 
@@ -106,17 +109,21 @@ curl -s -X POST "$A/v1/runs/$RUN/artifacts/ch0/field-001.tif/upload/complete" \
 
 ```
 type             https://aliquot.dev/problems/digest-mismatch
+status           422
 logicalName      ch0/field-001.tif
-declaredDigest   1a3c…            (what you said you would send)
-computedDigest   9e77…            (what was actually stored)
+declaredDigest   3717e7ef20367ccb…   what you said you would send
+computedDigest   f0dfa974452d051b…   what was actually stored
 ```
 
 and the run itself now `QUARANTINED`, with no `sealedAt`:
 
 ```bash
 curl -s "$A/v1/runs/$RUN" -H "authorization: Bearer $TOKEN" \
-  | python3 -c 'import sys,json;r=json.load(sys.stdin)["run"];print(r["state"],r["sealedAt"],r["quarantineReason"])'
+  | python3 -c 'import sys,json;r=json.load(sys.stdin);print(r["state"],r["sealedAt"],r["quarantineReason"])'
 ```
+
+Those two digests are not examples — the file above is deterministic, so if
+yours differ, something other than that one byte changed on the way.
 
 **Why it matters.** Nothing in that exchange trusted you. The object store's ETag
 was not used as evidence — a multipart ETag is the hash of a list of part hashes
@@ -127,19 +134,22 @@ storage and hashed it, streaming, and compared that against the declaration made
 paid deliberately: a service that never computes a digest can never report a
 mismatch, and an integrity claim no test can break is not a claim.
 
-Then notice what happened to the run: it was quarantined rather than left open
-for a retry, it has no `sealed` timestamp, and the reason names the artifact
-rather than the run — so an operator re-transfers one file, not a terabyte.
+Then notice what happened to the run. It was quarantined rather than left open to
+be retried quietly, and it has no `sealed` timestamp — so nothing downstream can
+consume it by accident, and the failure is a state in the record rather than a
+line in a log somebody has to find.
 
-### 1.3 Now do it properly
+### 1.3 Correct it the way the system intends
 
-**Do:** register a second run, upload the file you actually declared, and seal.
+**Do:** supersede the quarantined run — a correction here is a new run that cites
+the old one, never an edit — then upload the file you actually declared, and seal.
 
 ```bash
-RUN2=$(curl -s -X POST "$A/v1/studies/$STUDY/runs" \
+RUN2=$(curl -s -X POST "$A/v1/runs/$RUN/supersede" \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -H 'idempotency-key: sandbox-clean-01' \
-  -d "{\"instrumentId\":\"$INSTRUMENT\",\"acquiredAt\":\"2026-08-04T09:05:00Z\",
+  -H 'idempotency-key: sandbox-corrected-01' \
+  -d "{\"reason\":\"ch0 field 001 failed read-back verification; re-transferred\",
+       \"instrumentId\":\"$INSTRUMENT\",\"acquiredAt\":\"2026-08-04T09:00:00Z\",
        \"manifest\":[{\"logicalName\":\"ch0/field-001.tif\",\"digest\":\"$DIGEST\",
                       \"sizeBytes\":\"65536\",\"mediaType\":\"image/tiff\"}]}" \
   | field '["run"]["id"]')
@@ -147,6 +157,7 @@ RUN2=$(curl -s -X POST "$A/v1/studies/$STUDY/runs" \
 URL=$(curl -s -X POST "$A/v1/runs/$RUN2/artifacts/ch0/field-001.tif/upload" \
   -H "authorization: Bearer $TOKEN" | field '["parts"][0]["url"]')
 
+# This time, the file you declared.
 ETAG=$(curl -s -X PUT --data-binary @field-001.tif -D - -o /dev/null "$URL" \
   | tr -d '\r' | awk 'tolower($1)=="etag:"{gsub(/"/,"",$2);print $2}')
 
@@ -156,14 +167,18 @@ curl -s -X POST "$A/v1/runs/$RUN2/artifacts/ch0/field-001.tif/upload/complete" \
 
 curl -s -X POST "$A/v1/runs/$RUN2/seal" \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -H 'idempotency-key: sandbox-clean-seal-01' -d '{}' | python3 -m json.tool
+  -H 'idempotency-key: sandbox-corrected-seal-01' -d '{}' | python3 -m json.tool
 ```
 
 **Expect:** the seal returns a `processingJobId`, and within a few seconds the run
-reaches `PROCESSED`:
+reaches `PROCESSED` while still naming what it corrected — and the quarantined run
+is still there, unchanged, still readable:
 
 ```bash
-curl -s "$A/v1/runs/$RUN2" -H "authorization: Bearer $TOKEN" | field '["run"]["state"]'
+sleep 5      # the worker polls; sealing enqueues, it does not process inline
+curl -s "$A/v1/runs/$RUN2" -H "authorization: Bearer $TOKEN" \
+  | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["state"], d["supersedesRunId"])'
+curl -s "$A/v1/runs/$RUN" -H "authorization: Bearer $TOKEN" | field '["state"]'
 ```
 
 Then a lineage graph nobody typed, and an audit chain that has grown:
@@ -179,24 +194,42 @@ curl -s -X POST $A/v1/audit/verify -H "authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' -d '{}' | python3 -m json.tool
 ```
 
-**Expect:** derivations from `checksum-manifest 1.0.0` and `metadata-extract
-1.0.0` that you did not ask for, and a chain reading roughly
-`sandbox.provisioned`, `run.registered`, `artifact.rejected`, `run.quarantined`,
-`run.registered`, `artifact.verified`, `run.sealed`, `run.processed` — verifying
-as intact.
+**Expect:** a lineage graph containing two artifacts you never uploaded —
+`checksum-manifest/manifest.json` and `metadata-extract/metadata.json` — joined
+to yours by activities carrying the processor name and version, and reaching back
+to `Sandbox instrument` and `Sandbox operator` as agents. And the entire history
+of your tenant, fourteen events, verifying as intact:
 
-**Why it matters.** Sealing is the point at which the manifest is declared
-complete, and it is the boundary the database enforces: after it, the run's
-columns cannot be modified by anyone, including someone holding the database
-password (scenario 5). It is also what enqueues processing — one transaction
-writes the state change and the job row, so there is no window in which a run is
-sealed and its work has been forgotten. The derivations then appear as a *side
-effect* of that work, recording the processor's name and version. No human typed
-any of the lineage; that is exactly why it is worth trusting.
+```
+ 1 sandbox.provisioned        8 upload.started
+ 2 run.registered             9 artifact.verified
+ 3 upload.started            10 run.sealed
+ 4 run.quarantined           11 run.processing_started
+ 5 artifact.rejected         12 derivation.recorded
+ 6 run.registered            13 derivation.recorded
+ 7 run.superseded            14 run.processed
 
-And you can now read your own chain from `seq 1` to the end, hash by hash, and
-see the failure and its correction sitting in it permanently. The quarantined run
-is still there. It was not edited and not deleted.
+{ "ok": true, "eventsVerified": 14, "headHash": "9ed6935633c7…" }
+```
+
+**Why it matters.** Three claims land at once here.
+
+The correction was not an edit. The broken run still exists, still says
+`QUARANTINED`, still carries the reason — and the new run points back at it. There
+is deliberately no `superseded_by` column, because writing one would mean mutating
+a sealed run to record that it had been corrected. Anything that ever cited the
+original still points at exactly what it cited.
+
+Sealing is the immutability boundary the database enforces: after it, the run's
+columns cannot be changed by anyone, including someone holding the database
+password (scenario 5). It is also what enqueues processing, in the same
+transaction as the state change, so there is no window in which a run is sealed
+and the work has been forgotten.
+
+The lineage then appears as a *side effect* of that work, recording each
+processor's name and version. Nobody typed it, which is exactly why it is worth
+trusting — and "we found a bug in metadata-extract 1.0.0, what is affected?" is a
+query rather than an investigation.
 
 **When it ends.** Do nothing and the whole tenant — runs, artifacts, audit chain,
 the objects in the bucket that nothing else references — is deleted when the
@@ -463,7 +496,8 @@ If the walkthrough did its job, you can now state — and check — that:
 
 - an artifact that fails its checksum **quarantines the run** and names the file —
   and you saw it happen to bytes **you** corrupted, not to a fixture
-- a sealed run is **never edited**; corrections supersede and the original stays
+- a sealed run is **never edited**; corrections supersede and the original stays —
+  and you superseded one yourself, in a tenant that then deleted itself
 - lineage reaches **instrument and operator**, with processor versions, and
   exports as W3C PROV
 - the audit chain **detects tampering and says where**, and is honest about the

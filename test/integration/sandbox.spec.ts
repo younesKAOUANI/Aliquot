@@ -25,9 +25,10 @@ import { closeServices, testConfig, testDatabase } from './support/services';
  *
  * Four properties are asserted, and they are not of equal weight.
  *
- *   1. The session is an ordinary operator session. If a sandbox reached the
- *      interesting paths by relaxing a guard, it would demonstrate that the
- *      guards are negotiable rather than that the system works.
+ *   1. The session is an ordinary one -- admin of the sandbox tenant and nothing
+ *      else. If a sandbox reached the interesting paths by relaxing a guard, it
+ *      would demonstrate that the guards are negotiable rather than that the
+ *      system works. What bounds it is the tenant, not the role.
  *   2. The quota is refused at the earliest point at which refusing is free --
  *      a manifest entry that is too large is rejected at registration, before an
  *      upload URL exists, because refusing after the bytes have landed is a
@@ -251,12 +252,12 @@ describe('ephemeral sandbox tenants', () => {
 
   describe('finishing the story', () => {
     /**
-     * The session was provisioned with `operator`, which registers runs and
-     * cannot call `POST /v1/audit/verify` -- that needs steward or admin. A
-     * visitor could upload an artifact, watch the audit chain grow from their
-     * own action, and then be refused the one question the whole exercise
-     * builds towards. It holds `admin` because the tenant is theirs and dies
-     * with them: the privilege is bounded by the tenant, not by the role.
+     * `operator` registers runs and cannot call `POST /v1/audit/verify`, which
+     * needs steward or admin. A sandbox granted it would let a visitor upload an
+     * artifact, watch the audit chain grow from their own action, and then be
+     * refused the one question the whole exercise builds towards. So the
+     * membership is `admin`: the tenant is theirs and dies with them, and the
+     * privilege is bounded by the tenant rather than by the role.
      */
     it('can verify its own chain rather than being refused it', async () => {
       const issued = asSandbox((await sandboxApp.post('/v1/sandbox')).body);
