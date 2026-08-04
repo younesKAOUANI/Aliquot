@@ -102,12 +102,34 @@ systemctl enable --now unattended-upgrades > /dev/null 2>&1 || true
 systemctl enable --now fail2ban > /dev/null 2>&1 || true
 
 echo "==> nightly backup at 03:20 UTC"
+# The log file must exist and belong to the cron user BEFORE the job first runs.
+# cron's shell opens the >> redirect before it execs backup.sh, so against a
+# root-owned (or absent, in a root-owned directory) /var/log path it fails with
+# EACCES and the script never starts. With no MTA on the box the mail goes
+# nowhere, /var/backups fills from deploy-time dumps instead, and the nightly
+# backup silently never runs -- which you discover on the day you need it.
+install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0640 /dev/null /var/log/aliquot-backup.log
+
 cat > /etc/cron.d/aliquot-backup <<CRON
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 20 3 * * * ${DEPLOY_USER} ${DEPLOY_DIR}/backup.sh >> /var/log/aliquot-backup.log 2>&1
 CRON
 chmod 0644 /etc/cron.d/aliquot-backup
+
+# Two other projects share this disk; an unrotated log grows until it is a
+# problem for all three.
+cat > /etc/logrotate.d/aliquot-backup <<ROTATE
+/var/log/aliquot-backup.log {
+  weekly
+  rotate 8
+  compress
+  missingok
+  notifempty
+  create 0640 ${DEPLOY_USER} ${DEPLOY_USER}
+}
+ROTATE
+chmod 0644 /etc/logrotate.d/aliquot-backup
 
 echo "==> shared docker network"
 # The edge Caddy and all three application stacks meet here. Created now so no
