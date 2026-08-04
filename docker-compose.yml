@@ -41,15 +41,47 @@ services:
       retries: 30
       start_period: 5s
 
+  # ## Why this service answers to `minio.localhost`
+  #
+  # A presigned URL is signed for one host: SigV4 covers the Host header, so the
+  # origin cannot be rewritten afterwards without invalidating the signature. The
+  # viewer's sandbox tab uploads straight from the browser to the object store,
+  # which means the name the API signs has to resolve, to this container, from
+  # both inside the compose network and from a browser on the host.
+  #
+  # `minio` alone does not: it resolves only on this network. `localhost` alone
+  # does not: inside the seed container it is the seed container. `minio.localhost`
+  # does both -- Docker's embedded DNS answers it for containers because it is a
+  # network alias, and RFC 6761 makes the host resolve anything under `.localhost`
+  # to loopback, where the published port below is waiting.
+  #
+  # The port has to match on both sides for the same reason, which is why MinIO is
+  # told to listen on the published port rather than being remapped onto 9000.
+  #
+  # If a host does not resolve `*.localhost` the degradation is soft and specific:
+  # every container still reaches the store by the alias, and only the browser
+  # upload fails -- with the message the sandbox tab prints for exactly this.
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
-    command: server /data --console-address ":9001"
+    command:
+      - server
+      - /data
+      - --address
+      - ':${ALIQUOT_MINIO_PORT:-9000}'
+      - --console-address
+      - ':${ALIQUOT_MINIO_CONSOLE_PORT:-9001}'
     environment:
       MINIO_ROOT_USER: aliquot
       MINIO_ROOT_PASSWORD: aliquot-dev-secret
+      # `mc ready local` below assumes the server is on 9000; it is not.
+      MC_HOST_local: http://aliquot:aliquot-dev-secret@localhost:${ALIQUOT_MINIO_PORT:-9000}
     ports:
-      - '${ALIQUOT_MINIO_PORT:-9000}:9000'
-      - '${ALIQUOT_MINIO_CONSOLE_PORT:-9001}:9001'
+      - '${ALIQUOT_MINIO_PORT:-9000}:${ALIQUOT_MINIO_PORT:-9000}'
+      - '${ALIQUOT_MINIO_CONSOLE_PORT:-9001}:${ALIQUOT_MINIO_CONSOLE_PORT:-9001}'
+    networks:
+      default:
+        aliases:
+          - minio.localhost
     volumes:
       - minio-data:/data
     healthcheck:
@@ -87,13 +119,23 @@ services:
       PORT: 3000
       LOG_LEVEL: info
       DATABASE_URL: postgres://aliquot_login:aliquot-dev-secret@postgres:5432/aliquot
-      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_ENDPOINT: http://minio.localhost:${ALIQUOT_MINIO_PORT:-9000}
       STORAGE_BUCKET: aliquot
       STORAGE_ACCESS_KEY_ID: aliquot
       STORAGE_SECRET_ACCESS_KEY: aliquot-dev-secret
       STORAGE_FORCE_PATH_STYLE: 'true'
       AUTH_JWT_SECRET: development-only-secret-not-for-any-real-deployment
       AUTH_DEV_TOKEN_ENDPOINT: 'true'
+      # On locally, as it is on the deployment: the viewer's "Try it yourself"
+      # tab is the only part of this stack that writes, and a local run that
+      # cannot reach it is a different product from the one the walkthrough
+      # describes. See ADR-0021.
+      SANDBOX_MODE: 'true'
+      # Six a minute is the production value, and it is right there: each
+      # admitted request creates a tenant. It is wrong here, because the browser
+      # suite provisions one per test from a single address and would otherwise
+      # be testing the rate limiter. Raised on the development stack alone.
+      SANDBOX_RATE_LIMIT_PER_MINUTE: 60
     ports:
       - '${ALIQUOT_API_PORT:-3000}:3000'
     depends_on:
@@ -118,13 +160,18 @@ services:
       SERVICE_ROLE: worker
       LOG_LEVEL: info
       DATABASE_URL: postgres://aliquot_login:aliquot-dev-secret@postgres:5432/aliquot
-      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_ENDPOINT: http://minio.localhost:${ALIQUOT_MINIO_PORT:-9000}
       STORAGE_BUCKET: aliquot
       STORAGE_ACCESS_KEY_ID: aliquot
       STORAGE_SECRET_ACCESS_KEY: aliquot-dev-secret
       STORAGE_FORCE_PATH_STYLE: 'true'
       AUTH_JWT_SECRET: development-only-secret-not-for-any-real-deployment
       WORKER_CONCURRENCY: 4
+      # The reaper lives here, not in the API. Without this the tenants the API
+      # hands out are never collected and a long-lived dev stack accumulates
+      # them.
+      SANDBOX_MODE: 'true'
+      SANDBOX_REAP_INTERVAL_MS: 60000
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -144,7 +191,7 @@ services:
       SERVICE_ROLE: api
       DATABASE_URL: postgres://aliquot_login:aliquot-dev-secret@postgres:5432/aliquot
       DATABASE_ADMIN_URL: postgres://postgres:postgres@postgres:5432/aliquot
-      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_ENDPOINT: http://minio.localhost:${ALIQUOT_MINIO_PORT:-9000}
       STORAGE_BUCKET: aliquot
       STORAGE_ACCESS_KEY_ID: aliquot
       STORAGE_SECRET_ACCESS_KEY: aliquot-dev-secret
@@ -160,13 +207,11 @@ services:
   #
   #   docker compose run --rm demo
   #
-  # It runs inside the compose network rather than from the host, and that is
-  # not incidental. A presigned URL is signed for a specific host, so the URLs
-  # this API issues name `minio:9000` -- reachable from the worker and from
-  # here, and not from the developer's laptop. Signing them for `localhost`
-  # instead would fix the laptop and break the worker. Running the client where
-  # the URLs are valid is the honest way round; a real deployment has one
-  # externally-resolvable endpoint and the question disappears.
+  # It runs inside the compose network, which since ADR-0022 is convenience
+  # rather than necessity: the store answers to one name that resolves to it
+  # from here and from the host, so the presigned URLs this issues would work
+  # from a laptop shell too. Kept as a container because it also wants `api` and
+  # `postgres` by name, and because that is what the README documents.
   demo:
     profiles: ['demo']
     build:
@@ -178,7 +223,7 @@ services:
       SERVICE_ROLE: api
       DATABASE_URL: postgres://aliquot_login:aliquot-dev-secret@postgres:5432/aliquot
       DATABASE_ADMIN_URL: postgres://postgres:postgres@postgres:5432/aliquot
-      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_ENDPOINT: http://minio.localhost:${ALIQUOT_MINIO_PORT:-9000}
       STORAGE_BUCKET: aliquot
       STORAGE_ACCESS_KEY_ID: aliquot
       STORAGE_SECRET_ACCESS_KEY: aliquot-dev-secret

@@ -299,12 +299,13 @@ lineage, verify the chain, then tamper and show verification naming the exact
 broken sequence number — and restore it. It exits non-zero if any step does not
 behave as narrated, so it doubles as a smoke test.
 
-It runs *inside* the compose network, and that is worth understanding because it
-will otherwise confuse you: a presigned URL is signed for a specific host, so
-the URLs this API issues name `minio:9000`. That is reachable from the worker
-and from a container on the same network, and not from your shell. Signing them
-for `localhost` would fix your shell and break the worker. A real deployment has
-one externally-resolvable storage endpoint and the question does not arise.
+It runs *inside* the compose network, which is now a convenience rather than a
+requirement. A presigned URL is signed for one host — SigV4 covers the `Host`
+header, so the origin cannot be rewritten afterwards — and the object store
+therefore answers to a single name that resolves to it from a container *and*
+from your shell: `minio.localhost`. See
+[ADR-0022](docs/adr/0022-one-storage-name-that-resolves-from-inside-and-outside-the-network.md)
+for why that name, and what the two obvious alternatives cost.
 
 To follow the same arc by hand with `curl`, see [`docs/DEMO.md`](docs/DEMO.md).
 
@@ -674,9 +675,12 @@ your stack is on non-default ports, point the suite at it with
 You are running through `tsx`. Use `npm run build:watch` alongside `npm run dev`
 — see [Without containers](#without-containers).
 
-**Uploads fail from your shell but work from the demo**
-Presigned URLs are signed for `minio:9000`, which only resolves inside the
-compose network. Run the client there: `docker compose run --rm demo`.
+**The sandbox tab's upload fails in the browser with no HTTP status**
+Presigned URLs are signed for `minio.localhost`, which resolves to the object
+store from inside the network and to loopback from your machine. A resolver that
+does not honour `.localhost` breaks the second half. Everything else still works
+— containers reach the store either way — so the symptom is confined to that one
+tab. See [ADR-0022](docs/adr/0022-one-storage-name-that-resolves-from-inside-and-outside-the-network.md).
 
 **`refusing to start: row-level security would not be enforced`**
 `DATABASE_URL` points at a superuser or a `BYPASSRLS` role. Use the unprivileged

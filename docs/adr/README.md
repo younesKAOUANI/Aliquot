@@ -36,6 +36,7 @@ Format: [`TEMPLATE.md`](TEMPLATE.md). House rules for writing them:
 | [0019](0019-fastify-over-express-as-the-http-adapter.md) | Fastify over Express as the HTTP adapter | Accepted |
 | [0020](0020-read-only-demo-access-for-a-public-deployment.md) | Read-only demo access as a separate mechanism, not a relaxed development one | Accepted (amended by 0021) |
 | [0021](0021-an-ephemeral-write-sandbox-for-the-public-demo.md) | An ephemeral per-visitor tenant, so the public demo can be driven rather than watched | Accepted |
+| [0022](0022-one-storage-name-that-resolves-from-inside-and-outside-the-network.md) | One storage name that resolves from inside and outside the compose network | Accepted |
 
 ## Reading order
 
@@ -66,4 +67,4 @@ If you are reviewing this system and have time for four, read these:
 | Immutability and correction | 0007, 0010 |
 | Provenance | 0008 |
 | Processing reliability | 0004, 0014 |
-| Implementation and tooling | 0012, 0013, 0018, 0019 |
+| Implementation and tooling | 0012, 0013, 0018, 0019, 0022 |
