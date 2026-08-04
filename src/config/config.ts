@@ -72,6 +72,55 @@ const schema = z.object({
   DEMO_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(86400).default(3600),
   DEMO_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(20),
 
+  /**
+   * Enables `POST /v1/sandbox`, and it is allowed in production for the same
+   * reason `DEMO_MODE` is, plus one more.
+   *
+   * The demo shows a visitor a recording: a pre-seeded dataset they may read and
+   * cannot touch. The interesting half of this service is what happens when
+   * bytes disagree with their declaration, and nobody believes a recording of
+   * their own software catching its own planted fault. A sandbox session drives
+   * the real lifecycle against the real verification path.
+   *
+   * That means it mints a session that can write, which `DEMO_MODE` deliberately
+   * does not -- so the containment is different in kind. It is not a role check;
+   * it is that the tenant a sandbox session can reach contains nothing but what
+   * that session put there, holds a quota, and is deleted outright when its
+   * lifetime runs out. The two are not mutually exclusive and should normally
+   * both be on: read the seeded data, then go and make some.
+   */
+  SANDBOX_MODE: z.stringbool().default(false),
+  SANDBOX_TTL_MINUTES: z.coerce.number().int().min(1).max(1440).default(60),
+  SANDBOX_MAX_RUNS: z.coerce.number().int().min(1).max(1000).default(5),
+  /**
+   * Enforced at registration, against the declared size, before any presigned
+   * URL is issued. Checking it at upload completion instead would mean the bytes
+   * are already in the bucket by the time they are refused, which is not a quota
+   * at all.
+   */
+  SANDBOX_MAX_ARTIFACT_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(8 * 1024 * 1024),
+  SANDBOX_MAX_TOTAL_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(32 * 1024 * 1024),
+  /**
+   * A ceiling on mutating requests per sandbox, whatever they mutate.
+   *
+   * The run and byte quotas bound the expensive things. This bounds the cheap
+   * ones: the session holds `admin` over its own tenant, so without it a visitor
+   * could create instruments, studies and memberships without limit and never
+   * touch a run quota. Generous enough that the guided flow -- which is a
+   * handful of writes per run -- never sees it.
+   */
+  SANDBOX_MAX_WRITES: z.coerce.number().int().min(1).max(100_000).default(200),
+  SANDBOX_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(6),
+  SANDBOX_REAP_INTERVAL_MS: z.coerce.number().int().min(1000).default(300_000),
+
   IDEMPOTENCY_RETENTION_HOURS: z.coerce.number().int().min(1).default(24),
 
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(4),
@@ -121,6 +170,17 @@ export class AppConfig {
     userEmail: string;
     tokenTtlSeconds: number;
     rateLimitPerMinute: number;
+  };
+
+  readonly sandbox: {
+    enabled: boolean;
+    ttlMinutes: number;
+    maxRuns: number;
+    maxWrites: number;
+    maxArtifactBytes: number;
+    maxTotalBytes: number;
+    rateLimitPerMinute: number;
+    reapIntervalMs: number;
   };
 
   readonly idempotency: { retentionHours: number };
@@ -181,6 +241,17 @@ export class AppConfig {
       rateLimitPerMinute: env.DEMO_RATE_LIMIT_PER_MINUTE,
     };
 
+    this.sandbox = {
+      enabled: env.SANDBOX_MODE,
+      ttlMinutes: env.SANDBOX_TTL_MINUTES,
+      maxRuns: env.SANDBOX_MAX_RUNS,
+      maxWrites: env.SANDBOX_MAX_WRITES,
+      maxArtifactBytes: env.SANDBOX_MAX_ARTIFACT_BYTES,
+      maxTotalBytes: env.SANDBOX_MAX_TOTAL_BYTES,
+      rateLimitPerMinute: env.SANDBOX_RATE_LIMIT_PER_MINUTE,
+      reapIntervalMs: env.SANDBOX_REAP_INTERVAL_MS,
+    };
+
     this.idempotency = { retentionHours: env.IDEMPOTENCY_RETENTION_HOURS };
 
     this.worker = {
@@ -215,10 +286,23 @@ export class AppConfig {
       );
     }
 
+    // A single artifact that no run may ever hold is not a tighter quota, it is
+    // a sandbox in which the first upload always fails and the message blames
+    // the wrong limit. Two numbers that have to agree are worth checking once at
+    // boot rather than diagnosing from a support thread.
+    if (this.sandbox.maxArtifactBytes > this.sandbox.maxTotalBytes) {
+      throw new Error(
+        `SANDBOX_MAX_ARTIFACT_BYTES (${this.sandbox.maxArtifactBytes}) exceeds ` +
+          `SANDBOX_MAX_TOTAL_BYTES (${this.sandbox.maxTotalBytes}); no artifact of the ` +
+          'permitted size could ever be stored',
+      );
+    }
+
     Object.freeze(this.database);
     Object.freeze(this.storage);
     Object.freeze(this.auth);
     Object.freeze(this.demo);
+    Object.freeze(this.sandbox);
     Object.freeze(this.worker);
     Object.freeze(this.checkpoint);
     Object.freeze(this);

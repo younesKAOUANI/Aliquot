@@ -42,11 +42,27 @@ export type IdempotencyState = 'IN_FLIGHT' | 'COMPLETED';
 
 export type JobState = 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'DEAD';
 
+/**
+ * Whether a tenant is part of the enduring record. See migration 0008: a
+ * sandbox tenant is the only thing this service ever deletes, and this column
+ * is what makes that a property of the schema rather than of a WHERE clause.
+ */
+export type TenantKind = 'permanent' | 'sandbox';
+
 export interface TenantTable {
   id: string;
   slug: string;
   name: string;
   created_at: ServerTimestamp;
+  /**
+   * Neither column is application-writable. Rows are created by
+   * `aliquot.provision_sandbox_tenant()` and removed by
+   * `aliquot.reap_sandbox_tenant()`; `aliquot_app` holds SELECT on this table
+   * and nothing else, so an insert or update from here is a permission error
+   * rather than a decision.
+   */
+  kind: ColumnType<TenantKind, never, never>;
+  expires_at: ColumnType<Date | null, never, never>;
 }
 
 export interface AppUserTable {

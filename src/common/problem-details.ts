@@ -42,6 +42,9 @@ export const ProblemType = {
   CONFLICT: `${TYPE_BASE}/conflict`,
   RATE_LIMITED: `${TYPE_BASE}/rate-limited`,
   DEMO_UNAVAILABLE: `${TYPE_BASE}/demo-unavailable`,
+  SANDBOX_EXPIRED: `${TYPE_BASE}/sandbox-expired`,
+  SANDBOX_QUOTA_EXCEEDED: `${TYPE_BASE}/sandbox-quota-exceeded`,
+  ARTIFACT_TOO_LARGE: `${TYPE_BASE}/artifact-too-large`,
   INTERNAL: `${TYPE_BASE}/internal`,
 } as const;
 
@@ -174,6 +177,91 @@ export class RateLimitedError extends AliquotError {
 export class DemoUnavailableError extends AliquotError {
   constructor(detail: string) {
     super(ProblemType.DEMO_UNAVAILABLE, 503, 'Demo dataset unavailable', detail);
+  }
+}
+
+/**
+ * A disabled endpoint is absent, not forbidden.
+ *
+ * A 403 would confirm the route exists and is merely switched off, which tells a
+ * scanner exactly which deployment to come back to. The body says what an
+ * unmatched route says. Used by the development sign-in, the public demo
+ * sign-in and the sandbox endpoint, all of which are configuration-gated.
+ */
+export class RouteNotFoundError extends AliquotError {
+  constructor(method: string, path: string) {
+    super(ProblemType.NOT_FOUND, 404, 'Not found', `No route matches ${method} ${path}.`);
+  }
+}
+
+/**
+ * The sandbox behind this session has reached, or passed, its expiry.
+ *
+ * 403 rather than 401. The credential is genuine and its own signature has not
+ * run out -- a sandbox session token outlives its tenant by design, because the
+ * token TTL and the tenant TTL are separate clocks and nothing should depend on
+ * them agreeing. What has gone is the thing it is a credential for, and telling
+ * the holder to re-authenticate would send them round a loop that cannot
+ * succeed. The detail says to start a new sandbox because that is the only
+ * action available.
+ */
+export class SandboxExpiredError extends AliquotError {
+  constructor(expiresAt: Date) {
+    super(
+      ProblemType.SANDBOX_EXPIRED,
+      403,
+      'Sandbox expired',
+      `This sandbox expired at ${expiresAt.toISOString()} and has been, or is about to be, ` +
+        'deleted along with everything in it. Start a new one with POST /v1/sandbox.',
+      { expiresAt: expiresAt.toISOString() },
+    );
+  }
+}
+
+/**
+ * A sandbox has spent one of its allowances.
+ *
+ * 409 rather than 429. A rate limit says "not yet"; this says "not in this
+ * sandbox, ever" -- the state of the resource conflicts with the request, and no
+ * amount of waiting changes it, so there is deliberately no `Retry-After`.
+ *
+ * `quota` is a stable identifier a client can switch on; `limit` and `used` are
+ * decimal strings because one of them counts bytes and a byte count is a bigint
+ * everywhere else in this service.
+ */
+export class SandboxQuotaExceededError extends AliquotError {
+  constructor(
+    quota: 'runs' | 'totalBytes' | 'writes',
+    used: bigint,
+    limit: bigint,
+    detail: string,
+  ) {
+    super(ProblemType.SANDBOX_QUOTA_EXCEEDED, 409, 'Sandbox quota exceeded', detail, {
+      quota,
+      used: used.toString(),
+      limit: limit.toString(),
+    });
+  }
+}
+
+/**
+ * A declared artifact is larger than this tenant is allowed to store.
+ *
+ * 422 rather than 413: the request body is not too large, the number inside it
+ * is. `declaredSize` is echoed back so a client that computed it wrongly can see
+ * what the server read.
+ */
+export class ArtifactTooLargeError extends AliquotError {
+  constructor(logicalName: string, declaredSize: bigint, limit: bigint) {
+    super(
+      ProblemType.ARTIFACT_TOO_LARGE,
+      422,
+      'Declared artifact is too large',
+      `Manifest entry ${logicalName} declares ${declaredSize.toString()} bytes; this sandbox ` +
+        `accepts at most ${limit.toString()} bytes per artifact. The manifest is refused before ` +
+        'any upload URL is issued.',
+      { logicalName, declaredSize: declaredSize.toString(), limit: limit.toString() },
+    );
   }
 }
 

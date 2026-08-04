@@ -57,6 +57,23 @@ export abstract class ObjectStore {
   abstract putObject(key: string, body: Uint8Array, mediaType: string): Promise<void>;
 
   /**
+   * Remove an object. Idempotent: deleting a key that is not there succeeds.
+   *
+   * The only caller is the sandbox reaper (migration 0008), and it is the only
+   * operation on this interface that destroys anything. It is here rather than
+   * being reached around the seam for the same reason the corruption tests exist
+   * -- a store a test can substitute is a store a test can assert against, and
+   * "the reaper deleted an object a permanent tenant still references" is a
+   * failure that has to be provable in a test rather than argued about.
+   *
+   * Deciding *which* keys are safe to delete is emphatically not this
+   * interface's business: keys are content-addressed and therefore shared
+   * between tenants, and the check lives in
+   * `aliquot.digests_referenced_elsewhere()` where it can see the rows.
+   */
+  abstract deleteObject(key: string): Promise<void>;
+
+  /**
    * Whole object into memory. Only for objects this service produced and whose
    * size it already knows to be small -- a processor's JSON output, a manifest.
    * Verification does not use it; see `openReadStream`.

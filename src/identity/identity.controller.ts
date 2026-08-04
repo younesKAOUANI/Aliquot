@@ -14,7 +14,7 @@ import type { FastifyReply } from 'fastify';
 import { z } from 'zod';
 
 import type { Page } from '../common/cursor';
-import { AliquotError, ProblemType, RateLimitedError } from '../common/problem-details';
+import { RateLimitedError, RouteNotFoundError } from '../common/problem-details';
 import { AppConfig } from '../config/config';
 import type { RequestContext } from '../database/request-context';
 import type { StudyRole } from '../database/schema';
@@ -24,8 +24,8 @@ import type { AliquotRequest } from '../http/principal';
 import { parseWith } from '../http/zod-validation';
 import { AuthService } from './auth.service';
 import { Public } from './auth.guard';
-import { DemoRateLimiter } from './demo-rate-limiter';
 import { IdentityService } from './identity.service';
+import { FixedWindowRateLimiter } from './rate-limiter';
 import type {
   CreatedStudy,
   DemoSession,
@@ -111,26 +111,13 @@ const memberParamsSchema = z.object({ studyId: z.uuid(), userId: z.uuid() });
 const MEMBER_ROLES: StudyRole[] = ['operator', 'scientist', 'steward', 'admin'];
 const ADMIN_ONLY: StudyRole[] = ['admin'];
 
-/**
- * A disabled development endpoint is absent, not forbidden.
- *
- * A 403 would confirm the route exists and is merely switched off, which tells a
- * scanner exactly which deployment to come back to. The body says what an
- * unmatched route says.
- */
-class RouteNotFoundError extends AliquotError {
-  constructor(method: string, path: string) {
-    super(ProblemType.NOT_FOUND, 404, 'Not found', `No route matches ${method} ${path}.`);
-  }
-}
-
 @Controller('v1')
 export class IdentityController {
   constructor(
     private readonly identity: IdentityService,
     private readonly auth: AuthService,
     private readonly config: AppConfig,
-    private readonly demoLimiter: DemoRateLimiter,
+    private readonly limiter: FixedWindowRateLimiter,
   ) {}
 
   @Post('instruments')
@@ -267,8 +254,11 @@ export class IdentityController {
     // no address at all -- an in-process injection, which is how the tests
     // reach this -- shares one bucket rather than being exempted, because an
     // exemption is a hole that only ever gets found by accident.
-    const decision = this.demoLimiter.consume(
-      request.ip ?? 'unknown',
+    // Namespaced, because the limiter is shared with sandbox provisioning and a
+    // visitor who signs into the demo has not spent anything they might want for
+    // a sandbox.
+    const decision = this.limiter.consume(
+      `demo:${request.ip ?? 'unknown'}`,
       this.config.demo.rateLimitPerMinute,
     );
 

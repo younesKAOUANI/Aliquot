@@ -1,8 +1,14 @@
 import { Injectable } from '@nestjs/common';
 
 /**
- * A fixed-window request counter for the demo sign-in, held in this process's
- * memory.
+ * A fixed-window request counter held in this process's memory, shared by every
+ * unauthenticated endpoint that needs one.
+ *
+ * Two endpoints need one today -- the demo sign-in and sandbox provisioning --
+ * and they are the only two places this service does work for a caller who has
+ * presented no credential. Callers namespace their own keys (`demo:<ip>`,
+ * `sandbox:<ip>`) so that one instance can serve both without a visitor's demo
+ * sign-in consuming the budget for a sandbox they have not asked for yet.
  *
  * ## What this is honestly worth
  *
@@ -17,19 +23,19 @@ import { Injectable } from '@nestjs/common';
  *
  * It is also not a defence against a distributed attacker, who has as many
  * source addresses as they care to buy. What it defends against is the ordinary
- * failure: a script, a crawler, or a page with a retry loop hammering the one
- * endpoint on this service that does unauthenticated work.
+ * failure: a script, a crawler, or a page with a retry loop hammering the
+ * endpoints on this service that do unauthenticated work.
  *
  * ## Why fixed window rather than a token bucket
  *
  * A fixed window admits up to twice the rate across a window boundary. For a
- * limit whose job is to keep a demo endpoint from being hammered, that is a
+ * limit whose job is to keep a public endpoint from being hammered, that is a
  * rounding error, and the alternative costs a per-key timestamp list or a
  * refill calculation for no property this needs. Being able to state exactly
  * what the limiter does in two sentences is worth more here than the precision.
  */
 
-/** Windows are one minute because the configured limit is expressed per minute. */
+/** Windows are one minute because every configured limit is expressed per minute. */
 const WINDOW_MS = 60_000;
 
 /**
@@ -52,7 +58,7 @@ export type RateLimitDecision =
   { allowed: true; remaining: number } | { allowed: false; retryAfterSeconds: number };
 
 @Injectable()
-export class DemoRateLimiter {
+export class FixedWindowRateLimiter {
   private readonly windows = new Map<string, Window>();
 
   /**

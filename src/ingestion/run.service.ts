@@ -17,6 +17,7 @@ import type { Trx } from '../database/database.service';
 import type { RequestContext } from '../database/request-context';
 import type { ArtifactVerificationState, RunState, StudyRole } from '../database/schema';
 import { AuthService } from '../identity/auth.service';
+import { SandboxService } from '../identity/sandbox.service';
 import { JobQueue } from '../processing/job-queue';
 // The queue name is owned by the handler that serves it. Two literals that must
 // match do not fail when they drift -- the producer and the consumer simply never
@@ -243,6 +244,7 @@ export class RunService {
     private readonly audit: AuditService,
     private readonly auth: AuthService,
     private readonly jobs: JobQueue,
+    private readonly sandbox: SandboxService,
   ) {}
 
   /**
@@ -261,6 +263,12 @@ export class RunService {
     assertWellFormedManifest(input.manifest);
     const operatorId = resolveOperator(ctx, input.operatorId);
     await this.auth.requireStudyRole(ctx, studyId, WRITE_ROLES);
+    // Before the idempotency key is claimed, with everything else that can be
+    // refused without a write. A no-op outside a sandbox tenant, and the reason
+    // it is here rather than in the upload path is that refusing a declaration
+    // is the last moment at which no bytes have moved: an artifact rejected on
+    // completion is an artifact already sitting in the bucket.
+    await this.sandbox.assertDeclarationsWithinQuota(ctx, input.manifest);
 
     return this.idempotency.execute(
       ctx,
@@ -299,6 +307,9 @@ export class RunService {
     idempotencyKey: string | undefined,
   ): Promise<IdempotentOutcome<RunMutationResult>> {
     assertWellFormedManifest(input.manifest);
+    // Superseding declares a fresh manifest, so it is the same door as
+    // registration and is checked at the same point.
+    await this.sandbox.assertDeclarationsWithinQuota(ctx, input.manifest);
     const predecessor = await this.requireRunAccess(ctx, runId, WRITE_ROLES);
 
     // OPEN is excluded because an open run is still mutable -- there is nothing

@@ -4,6 +4,7 @@ import { NestFactory } from '@nestjs/core';
 
 import { AppModule } from './app.module';
 import { AppConfig } from './config/config';
+import { SandboxReaper } from './identity/sandbox-reaper';
 import { Logger } from './observability/logger';
 import { WorkerRuntime } from './processing/worker.runtime';
 
@@ -50,6 +51,7 @@ async function bootstrap(): Promise<void> {
 
   const logger = context.get(Logger);
   const runtime = context.get(WorkerRuntime);
+  const reaper = context.get(SandboxReaper);
 
   let stopping = false;
   for (const signal of SHUTDOWN_SIGNALS) {
@@ -65,11 +67,24 @@ async function bootstrap(): Promise<void> {
       stopping = true;
       logger.info('shutdown signal received', { signal });
       runtime.stop();
+      reaper.stop();
     });
   }
 
-  // Resolves once the loop has stopped claiming and in-flight work has drained.
-  await runtime.run();
+  // Two loops, started together so that neither can reject before the other has
+  // a handler attached. The reaper lives here rather than in the API because the
+  // API is the tier that gets scaled, and N replicas would each poll for the
+  // same expired tenants. It is a loop rather than a queue job because a queue
+  // job needs somebody to enqueue it on a schedule, and the only thing available
+  // to do that is a loop -- at which point the queue is a detour.
+  //
+  // Neither is gated on `SANDBOX_MODE`. Sandboxes provisioned before an operator
+  // switched the flag off still have an expiry, and the flag stopping new ones
+  // must not also strand the old ones.
+  //
+  // `runtime.run()` resolves once the loop has stopped claiming and in-flight
+  // work has drained; `reaper.run()` resolves at the end of the sweep it is in.
+  await Promise.all([runtime.run(), reaper.run()]);
   await context.close();
 }
 

@@ -6,6 +6,7 @@ import {
   CompleteMultipartUploadCommand,
   CreateBucketCommand,
   CreateMultipartUploadCommand,
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
@@ -238,6 +239,12 @@ export class S3ObjectStore extends ObjectStore implements OnModuleInit, OnModule
         ContentLength: body.byteLength,
       }),
     );
+  }
+
+  async deleteObject(key: string): Promise<void> {
+    // S3 answers 204 for a key that never existed, so there is nothing to
+    // special-case: the caller asked for the object to be gone and it is.
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
   }
 
   async getObject(key: string): Promise<Uint8Array> {
