@@ -9,7 +9,7 @@
   <body>
     <header>
       <h1>Aliquot</h1>
-      <p class="subtitle">Instrument run ingestion &amp; provenance — read-only viewer</p>
+      <p class="subtitle">Instrument run ingestion &amp; provenance</p>
       <div class="auth">
         <button id="demo-signin" type="button" class="primary">Try the demo</button>
         <span id="whoami" class="muted"></span>
@@ -34,6 +34,7 @@
       <button type="button" data-view="runs" class="active">Runs</button>
       <button type="button" data-view="lineage">Lineage</button>
       <button type="button" data-view="audit">Audit chain</button>
+      <button type="button" data-view="sandbox">Try it yourself</button>
     </nav>
 
     <main>
@@ -71,6 +72,11 @@
             <strong>Audit chain</strong> — every state change, hash-chained. Press
             <strong>Verify chain</strong>: it recomputes every hash and reports the first broken
             link, or says the record is intact.
+          </li>
+          <li>
+            <strong>Try it yourself</strong> — the four steps above are a recording. This one is
+            not: it gives you a disposable tenant of your own and lets you run an acquisition
+            through it, including corrupting a byte on purpose to watch the service refuse it.
           </li>
         </ol>
         <p class="muted">
@@ -166,6 +172,101 @@
           <tbody></tbody>
         </table>
         <button id="audit-more" type="button" hidden>Load more</button>
+      </section>
+
+      <section id="view-sandbox" class="view">
+        <p class="view-hint">
+          Every other view on this page reads. This one writes. It hands you an empty tenant of your
+          own for an hour and drives a real acquisition through it — declare, upload, verify, seal,
+          process — against the same code paths a laboratory instrument would hit. Nothing you do
+          here can reach the seeded dataset, and nothing you make here survives the hour.
+        </p>
+
+        <div id="sandbox-offer" class="panel">
+          <h3>What you get</h3>
+          <p>
+            A tenant, a study, an instrument and an operator account, created in one transaction and
+            yours alone. The session it issues is an <em>ordinary</em> one — admin of a tenant that
+            contains nothing except what you put in it. No guard is relaxed for it and every role
+            check runs exactly as it does for a paying tenant; what contains it is the tenant, not
+            the role. It is empty, it holds a quota, and it is deleted outright when its clock runs
+            out.
+          </p>
+          <div class="filters">
+            <button id="sandbox-start" type="button" class="primary">Start a sandbox</button>
+            <span id="sandbox-start-note" class="muted"></span>
+          </div>
+        </div>
+
+        <div id="sandbox-session" class="panel" hidden>
+          <h3>Your sandbox</h3>
+          <p class="sandbox-banner">
+            This tenant is yours alone. It contains nothing except what you put in it, and when the
+            countdown reaches zero the reaper deletes it in full — rows, audit chain and objects no
+            other tenant is pointing at. The Runs, Lineage and Audit views above are still showing
+            whatever session you signed in with; this tab holds a second, separate credential and
+            does not disturb it.
+          </p>
+          <dl class="kv">
+            <dt>tenant</dt>
+            <dd><span id="sandbox-slug"></span> <span id="sandbox-tenant" class="muted"></span></dd>
+            <dt>study / instrument</dt>
+            <dd><span id="sandbox-study"></span> / <span id="sandbox-instrument"></span></dd>
+            <dt>self-destructs in</dt>
+            <dd><span id="sandbox-countdown" class="countdown">—</span> <span id="sandbox-expires" class="muted"></span></dd>
+            <dt>quota</dt>
+            <dd id="sandbox-quota"></dd>
+            <dt>used</dt>
+            <dd id="sandbox-used"></dd>
+          </dl>
+        </div>
+
+        <div id="sandbox-artifact" class="panel" hidden>
+          <h3>The artifact</h3>
+          <p>
+            Generated here, in your browser, as a real PNG — not a placeholder. The processing step
+            recognises PNG by its magic bytes and reads the dimensions back out of it, so the
+            derivation you will see at the end is genuine work on these bytes rather than a stub.
+          </p>
+          <div class="artifact-row">
+            <canvas id="sandbox-canvas" width="512" height="384"></canvas>
+            <dl class="kv">
+              <dt>logical name</dt>
+              <dd id="frame-name"></dd>
+              <dt>media type</dt>
+              <dd>image/png</dd>
+              <dt>size</dt>
+              <dd id="frame-size"></dd>
+              <dt>sha-256</dt>
+              <dd id="frame-digest" class="digest"></dd>
+            </dl>
+          </div>
+          <p class="muted">
+            That digest is what gets declared to the API before a single byte moves. Everything after
+            this point is the service deciding whether to believe it.
+          </p>
+
+          <div class="filters">
+            <button id="sandbox-regenerate" type="button">Generate another frame</button>
+            <label id="sandbox-corrupt-label" class="toggle">
+              <input id="sandbox-corrupt" type="checkbox" />
+              Corrupt one byte in transit
+            </label>
+          </div>
+          <p id="sandbox-corrupt-note" class="muted">
+            With this on, the bytes sent to object storage differ from the declared digest by a
+            single flipped bit in the middle of the file. Nothing else changes: the declaration is
+            honest, the transfer is not. Read-back verification is the only thing standing between
+            that and a sealed run.
+          </p>
+
+          <div class="filters">
+            <button id="sandbox-run" type="button" class="primary">Run the lifecycle</button>
+            <span id="sandbox-run-note" class="muted"></span>
+          </div>
+        </div>
+
+        <ol id="sandbox-timeline" class="timeline" hidden></ol>
       </section>
     </main>
 

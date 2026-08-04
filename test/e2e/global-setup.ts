@@ -62,6 +62,14 @@ export default async function globalSetup(): Promise<void> {
   process.env.ALIQUOT_E2E_DEV_SIGNIN = devSignIn?.ok ? 'true' : 'false';
   process.env.ALIQUOT_E2E_DEMO_SIGNIN = demoSignIn?.ok ? 'true' : 'false';
 
+  // Probed with GET, which is authenticated and therefore answers 401 when the
+  // feature is on. POST would work too and would leave a tenant behind on every
+  // run of the suite. 404 is the deployment saying the route does not exist,
+  // which is how `SANDBOX_MODE=false` presents itself -- absent rather than
+  // forbidden, so a scanner learns nothing from the difference.
+  const sandbox = await fetch(`${BASE_URL}/v1/sandbox`).catch(() => undefined);
+  process.env.ALIQUOT_E2E_SANDBOX = sandbox?.status === 404 ? 'false' : 'true';
+
   if (!devSignIn?.ok && !demoSignIn?.ok) {
     throw new Error(
       'Neither sign-in mechanism is available.\n' +

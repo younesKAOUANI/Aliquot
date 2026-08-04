@@ -260,7 +260,10 @@ code,
   overflow-wrap: anywhere;
 }
 
-#lineage-graph {
+/* `.graph` is the same container under another name: the sandbox draws its
+   lineage inside the timeline step that produced it, using the same renderer. */
+#lineage-graph,
+.graph {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 7px;
@@ -268,7 +271,8 @@ code,
   min-height: 220px;
 }
 
-#lineage-graph svg {
+#lineage-graph svg,
+.graph svg {
   display: block;
 }
 
@@ -398,11 +402,13 @@ footer a {
 /* The provenance graph is wider than the viewport by design -- it grows with
    the depth of the chain. Make the fact that it scrolls visible rather than
    leaving the rightmost nodes looking clipped. */
-#lineage-graph {
+#lineage-graph,
+.graph {
   scrollbar-color: var(--line) transparent;
 }
 
-#lineage-graph::after {
+#lineage-graph::after,
+.graph::after {
   content: '';
   position: sticky;
   right: 0;
@@ -413,4 +419,239 @@ footer a {
   height: 100%;
   pointer-events: none;
   background: linear-gradient(to right, transparent, var(--panel));
+}
+
+/* ---------------------------------------------------------------------------
+   The sandbox (ADR-0021)
+
+   The only view that writes, and the only one whose job is to be watched rather
+   than read. Everything below exists to make three things legible: which step is
+   happening now, which have finished, and which one refused and why.
+   --------------------------------------------------------------------------- */
+
+/* The timeline hides whole steps, and several of the elements it hides carry a
+   `display` of their own, which the `hidden` attribute alone loses to. */
+[hidden] {
+  display: none !important;
+}
+
+.sandbox-banner {
+  border-left: 2px solid var(--accent);
+  padding-left: 12px;
+  color: var(--muted);
+  max-width: 78ch;
+}
+
+.countdown {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--warn);
+}
+
+.countdown.expired {
+  color: var(--bad);
+}
+
+.artifact-row {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+/* Drawn at half size. The canvas is 512x384 because that is what gets hashed;
+   how large it appears is a presentation choice and must not change the bytes. */
+#sandbox-canvas {
+  max-width: 256px;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #04070c;
+}
+
+.artifact-row .kv {
+  flex: 1 1 320px;
+  margin: 0;
+}
+
+.digest {
+  font-family: var(--mono);
+  font-size: 11px;
+  word-break: break-all;
+  color: var(--accent);
+}
+
+/* The second half of a digest comparison. Colouring only the computed one says
+   which of the two is the surprise. */
+.digest.mismatch {
+  color: var(--bad);
+}
+
+.warn {
+  color: var(--warn);
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Armed, not merely checked. This toggle deliberately breaks the next run, and
+   a visitor should not be able to trip it without noticing. */
+.toggle.armed {
+  color: var(--warn);
+}
+
+.timeline {
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 0 0 0 20px;
+  /* The spine. Steps hang off it so a glance shows how far the run got. */
+  border-left: 1px solid var(--line);
+}
+
+.step {
+  position: relative;
+  padding: 0 0 18px;
+}
+
+/* The bead on the spine, coloured by outcome. This is the only status indicator
+   that survives being read peripherally while the run is in flight. */
+.step::before {
+  content: '';
+  position: absolute;
+  left: -25px;
+  top: 5px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.step.active::before {
+  border-color: var(--accent);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.step.done::before {
+  background: var(--ok);
+  border-color: var(--ok);
+}
+
+.step.failed::before {
+  background: var(--bad);
+  border-color: var(--bad);
+}
+
+/* Pending and skipped read the same on the spine and differently in the text:
+   the bead says "nothing happened here", the body says whether it still might. */
+.step.pending,
+.step.skipped {
+  color: var(--muted);
+}
+
+@keyframes pulse {
+  50% {
+    background: var(--accent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .step.active::before {
+    animation: none;
+    background: var(--accent);
+  }
+}
+
+.step-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.step-title {
+  font-weight: 600;
+}
+
+/* The call each step made, beside the plain-English title. A reader should be
+   able to map every line of this view onto an operation in the API reference. */
+.step-call {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.step-body {
+  margin-top: 6px;
+  font-size: 13px;
+  max-width: 82ch;
+}
+
+.step-body p {
+  margin: 8px 0 0;
+}
+
+.step-body code {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.step-body .kv {
+  margin: 6px 0 0;
+}
+
+.step-body table {
+  margin-top: 8px;
+}
+
+.step-body tbody tr:hover {
+  cursor: default;
+}
+
+.step-body .graph {
+  margin-top: 10px;
+}
+
+/* An RFC 9457 document, rendered as one. The extension members are the part
+   worth reading, so they get the same treatment as the standard ones. */
+.problem {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--bad);
+  border-radius: 5px;
+  background: var(--panel-2);
+}
+
+.problem p {
+  margin: 6px 0 0;
+}
+
+.problem-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+/* Whatever the object store said, verbatim. It is XML from somebody else's
+   service and paraphrasing it would lose the one detail that identifies it. */
+.raw {
+  margin: 8px 0 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--muted);
 }
