@@ -11,13 +11,18 @@
       <h1>Aliquot</h1>
       <p class="subtitle">Instrument run ingestion &amp; provenance — read-only viewer</p>
       <div class="auth">
-        <label for="token">Bearer token</label>
-        <input id="token" type="password" placeholder="paste a token, or sign in below" />
-        <input id="tenant" type="text" placeholder="tenant slug" value="acme" size="12" />
-        <input id="email" type="email" placeholder="operator@acme.test" />
-        <button id="signin" type="button">Sign in</button>
         <button id="demo-signin" type="button" class="primary">Try the demo</button>
         <span id="whoami" class="muted"></span>
+        <details id="own-credentials">
+          <summary>Use my own credentials</summary>
+          <div class="auth">
+            <label for="token">Bearer token</label>
+            <input id="token" type="password" placeholder="paste a token, or sign in below" />
+            <input id="tenant" type="text" placeholder="tenant slug" value="acme" size="12" />
+            <input id="email" type="email" placeholder="operator@acme.test" />
+            <button id="signin" type="button">Sign in</button>
+          </div>
+        </details>
       </div>
       <p id="demo-banner" class="demo-banner" hidden>
         Read-only demo session on a pre-seeded dataset. Every endpoint can be read; nothing can be
@@ -32,7 +37,54 @@
     </nav>
 
     <main>
+      <section id="intro" class="panel intro">
+        <h2>What this is</h2>
+        <p>
+          Aliquot gets data off laboratory instruments and into a research data platform without
+          losing track of where any of it came from. It is infrastructure, not science: it does not
+          analyse images or interpret results.
+        </p>
+        <p>
+          An instrument <strong>declares</strong> what it is about to upload — name, size, SHA-256 —
+          then uploads straight to object storage. Aliquot reads the bytes back, hashes them, and
+          compares. Match and the run can be <em>sealed</em> and processed; mismatch and it is
+          <em>quarantined</em> instead, naming the artifact. Nothing is ever edited after sealing:
+          a correction is a new run that <em>supersedes</em> the old one, so a citation still points
+          at exactly what it cited.
+        </p>
+        <h2>What to click</h2>
+        <ol class="intro-steps">
+          <li>
+            <strong>Try the demo</strong> above — no account needed. It signs you in as a data
+            steward on a seeded dataset, read-only.
+          </li>
+          <li>
+            <strong>Runs</strong> — six runs across the whole lifecycle. Open the
+            <span class="badge QUARANTINED">QUARANTINED</span> one: an artifact failed its checksum,
+            so it was never sealed. Then open the run that superseded it.
+          </li>
+          <li>
+            <strong>Lineage</strong> — click a verified artifact inside a run to see what produced
+            it, back to the instrument and the human. Same graph as W3C PROV-JSON.
+          </li>
+          <li>
+            <strong>Audit chain</strong> — every state change, hash-chained. Press
+            <strong>Verify chain</strong>: it recomputes every hash and reports the first broken
+            link, or says the record is intact.
+          </li>
+        </ol>
+        <p class="muted">
+          Full walkthrough with expected results:
+          <a href="https://github.com/younesKAOUANI/Aliquot/blob/main/docs/WALKTHROUGH.md">
+            docs/WALKTHROUGH.md</a>. API reference at <a href="/docs">/docs</a>.
+        </p>
+      </section>
+
       <section id="view-runs" class="view active">
+        <p class="view-hint">
+          One row per acquisition. Click a run to see its manifest — what the instrument declared
+          and whether each artifact verified. Click a verified artifact to trace its lineage.
+        </p>
         <div class="filters">
           <select id="filter-state">
             <option value="">any state</option>
@@ -64,6 +116,11 @@
       </section>
 
       <section id="view-lineage" class="view">
+        <p class="view-hint">
+          Where an artifact came from, and what came from it. Nobody typed this: it is the rows the
+          ingestion and processing paths wrote while doing their work. The graph scrolls
+          horizontally.
+        </p>
         <div class="filters">
           <input id="lineage-artifact" placeholder="artifact id" size="40" />
           <select id="lineage-direction">
@@ -79,7 +136,18 @@
       </section>
 
       <section id="view-audit" class="view">
+        <p class="view-hint">
+          Every state change, in a per-tenant hash chain. Each event carries the hash of its
+          predecessor, and the application role holds <code>INSERT</code> and <code>SELECT</code> on
+          this table and nothing else — there is no code path that can edit one.
+        </p>
         <div class="filters">
+          <select id="filter-action">
+            <option value="">all actions</option>
+            <option value="run">run.* only</option>
+            <option value="artifact">artifact.* only</option>
+            <option value="derivation">derivation.* only</option>
+          </select>
           <button id="verify-chain" type="button">Verify chain</button>
           <button id="reload-audit" type="button">Reload</button>
           <span id="verify-result"></span>

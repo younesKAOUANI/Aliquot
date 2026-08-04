@@ -20,6 +20,18 @@ const state = {
 };
 
 $('#token').value = state.token;
+
+/**
+ * The explainer is shown until there is a session and hidden once there is one.
+ * It exists for the visitor who arrives at an empty table with no idea what a
+ * "run" is; once they can see runs, the runs are the better explanation.
+ */
+function showIntro(visible) {
+  const intro = $('#intro');
+  if (intro) intro.hidden = !visible;
+}
+
+showIntro(state.token === '');
 $('#demo-banner').hidden = !state.demo;
 
 // ---------------------------------------------------------------------------
@@ -154,6 +166,7 @@ $$('nav button').forEach((button) => {
 // ---------------------------------------------------------------------------
 
 async function loadRuns(reset) {
+  showIntro(false);
   if (reset) {
     state.runsCursor = null;
     $('#runs-table tbody').innerHTML = '';
@@ -226,7 +239,9 @@ async function showRun(runId) {
     if (!artifactId) return;
     row.addEventListener('click', () => {
       $('#lineage-artifact').value = artifactId;
-      $$('nav button').find((b) => b.dataset.view === 'lineage').click();
+      $$('nav button')
+        .find((b) => b.dataset.view === 'lineage')
+        .click();
       void loadLineage();
     });
   });
@@ -300,8 +315,7 @@ function renderGraph(graph) {
   });
 
   const width = 40 + depths.length * (NODE_W + GAP_X);
-  const height =
-    40 + Math.max(...[...columns.values()].map((c) => c.length)) * (NODE_H + GAP_Y);
+  const height = 40 + Math.max(...[...columns.values()].map((c) => c.length)) * (NODE_H + GAP_Y);
 
   const edgeSvg = edges
     .map((edge) => {
@@ -354,29 +368,57 @@ async function loadAudit(reset) {
     $('#audit-table tbody').innerHTML = '';
   }
 
-  const params = new URLSearchParams({ limit: '50' });
-  if (state.auditCursor) params.set('cursor', state.auditCursor);
-
-  const page = await api(`/v1/audit?${params}`);
+  // The filter selects a *family* of actions (`run.*`), and the API filters on
+  // one exact action, so the narrowing happens here. That means a page can
+  // contain no matches at all -- on a public deployment every visitor mints a
+  // session, so `session.issued` can fill an entire page and a filter that
+  // stopped after one fetch would show an empty table while matching events sat
+  // on the next. So: keep pulling pages until something matches or the pages
+  // run out, bounded so a filter with no matches anywhere still terminates.
+  const prefix = $('#filter-action')?.value ?? '';
   const body = $('#audit-table tbody');
+  const MAX_PAGES = 8;
 
-  for (const event of page.items) {
-    const row = document.createElement('tr');
-    row.innerHTML = `
-      <td class="mono">${event.seq}</td>
-      <td><code>${escapeHtml(event.action)}</code></td>
-      <td class="muted">${escapeHtml(event.actorLabel)} <span class="muted">(${event.actorType})</span></td>
-      <td class="muted mono">${escapeHtml(event.targetType)} ${short(event.targetId)}</td>
-      <td class="muted">${event.occurredAt}</td>
-      <td><code title="${event.hash}">${short(event.hash, 12)}</code></td>`;
-    body.append(row);
+  let matched = 0;
+  let page = null;
+
+  for (let fetched = 0; fetched < MAX_PAGES; fetched += 1) {
+    const params = new URLSearchParams({ limit: '50' });
+    if (state.auditCursor) params.set('cursor', state.auditCursor);
+
+    page = await api(`/v1/audit?${params}`);
+    state.auditCursor = page.nextCursor;
+
+    const shown = prefix
+      ? page.items.filter((event) => event.action.startsWith(`${prefix}.`))
+      : page.items;
+
+    for (const event of shown) {
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td class="mono">${event.seq}</td>
+        <td><code>${escapeHtml(event.action)}</code></td>
+        <td class="muted">${escapeHtml(event.actorLabel)} <span class="muted">(${event.actorType})</span></td>
+        <td class="muted mono">${escapeHtml(event.targetType)} ${short(event.targetId)}</td>
+        <td class="muted">${event.occurredAt}</td>
+        <td><code title="${event.hash}">${short(event.hash, 12)}</code></td>`;
+      body.append(row);
+    }
+
+    matched += shown.length;
+    if (matched > 0 || state.auditCursor === null) break;
   }
 
-  state.auditCursor = page.nextCursor;
-  $('#audit-more').hidden = !page.nextCursor;
+  $('#audit-more').hidden = state.auditCursor === null;
+
+  if (matched === 0 && body.childElementCount === 0) {
+    body.innerHTML =
+      '<tr><td colspan="6" class="muted">No matching events in the recent history.</td></tr>';
+  }
 }
 
 $('#reload-audit').addEventListener('click', () => void loadAudit(true));
+$('#filter-action')?.addEventListener('change', () => void loadAudit(true));
 $('#audit-more').addEventListener('click', () => void loadAudit(false));
 
 $('#verify-chain').addEventListener('click', async () => {

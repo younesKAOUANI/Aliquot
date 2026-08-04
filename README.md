@@ -29,6 +29,7 @@ API at <http://localhost:3000>, docs at `/docs`, read-only viewer at `/`.
 ## Contents
 
 - [Why this exists](#why-this-exists)
+- [Try it](#try-it)
 - [Case study: plate 04](#case-study-plate-04)
 - [The five guarantees](#the-five-guarantees)
 - [Running it locally](#running-it-locally)
@@ -60,6 +61,20 @@ archaeology.
 **The record is not defensible.** In an audited environment, "we're fairly sure
 this file wasn't modified" is not an answer. Integrity has to be demonstrable,
 not asserted.
+
+---
+
+## Try it
+
+Live at **<https://aliquot.youneskaouani.dev>** — press *Try the demo*. No
+account, read-only, pre-seeded with a dataset that covers the whole lifecycle
+including a run that failed its checksum and the run that corrected it.
+
+[**docs/WALKTHROUGH.md**](docs/WALKTHROUGH.md) is ten scenarios, about fifteen
+minutes, each stating what to click, what you should see, and why that is the
+interesting part. Every scenario is asserted by
+[`test/e2e/walkthrough.spec.ts`](test/e2e/walkthrough.spec.ts), so the document
+cannot drift from the product without CI noticing.
 
 ---
 

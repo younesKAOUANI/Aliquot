@@ -32,10 +32,25 @@ const NORTHWIND = { tenantSlug: 'northwind', email: 'ines.duarte@northwind.test'
 const DEV_SIGNIN = process.env.ALIQUOT_E2E_DEV_SIGNIN !== 'false';
 const DEMO_SIGNIN = process.env.ALIQUOT_E2E_DEMO_SIGNIN === 'true';
 
+/**
+ * The tenant+email inputs live behind a `<details>` now: they are the only way
+ * in for an operator and pure noise for the visitor the demo button is for.
+ * Playwright will not type into a collapsed element, so every test that uses
+ * the form has to open it first -- which is also what a real user does.
+ */
+async function openCredentialForm(page: Page): Promise<void> {
+  const form = page.locator('#own-credentials');
+  if (!(await form.locator('#tenant').isVisible())) {
+    await form.locator('summary').click();
+  }
+  await expect(form.locator('#tenant')).toBeVisible();
+}
+
 async function signIn(page: Page, who: { tenantSlug: string; email: string }): Promise<void> {
   await page.goto('/');
 
   if (DEV_SIGNIN) {
+    await openCredentialForm(page);
     await page.fill('#tenant', who.tenantSlug);
     await page.fill('#email', who.email);
     await page.click('#signin');
@@ -54,6 +69,7 @@ test.describe('signing in', () => {
     // answered 400 "body tenantSlug: Invalid input: expected string, received
     // undefined", which surfaced in the footer and nowhere else.
     await page.goto('/');
+    await openCredentialForm(page);
     await page.fill('#tenant', ACME.tenantSlug);
     await page.fill('#email', ACME.email);
     await page.click('#signin');
@@ -75,6 +91,7 @@ test.describe('signing in', () => {
 
   test('an unknown tenant is refused with a readable problem detail', async ({ page }) => {
     await page.goto('/');
+    await openCredentialForm(page);
     await page.fill('#tenant', 'no-such-tenant');
     await page.fill('#email', ACME.email);
     await page.click('#signin');
@@ -85,6 +102,7 @@ test.describe('signing in', () => {
 
   test('a missing tenant is caught before the request is sent', async ({ page }) => {
     await page.goto('/');
+    await openCredentialForm(page);
     await page.fill('#tenant', '');
     await page.fill('#email', ACME.email);
     await page.click('#signin');
